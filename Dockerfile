@@ -7,7 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Indicator că rulează în Docker
 ENV IN_DOCKER=1
 
 CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:5001", "app:app"]
