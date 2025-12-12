@@ -5,14 +5,10 @@ import os
 import time
 import jwt
 
-# =================================================
 # Environment detection
-# =================================================
 IN_DOCKER = os.environ.get("IN_DOCKER", "0") == "1"
 
-# =================================================
 # Flask app
-# =================================================
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", "SUPER_SECRET_SESSION_KEY")
 
@@ -23,13 +19,11 @@ VISIBLE_ROLES = {"Angajat", "HR", "Administrator"}
 app.config.update(
     SQLALCHEMY_TRACK_MODIFICATIONS=False,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=False,     # fără HTTPS
+    SESSION_COOKIE_SECURE=False,
     SESSION_COOKIE_HTTPONLY=True,
 )
 
-# =================================================
 # Database configuration
-# =================================================
 if IN_DOCKER:
     DB_HOST = "profile-db"
     FLASK_PORT = 5001
@@ -47,9 +41,7 @@ app.config["SQLALCHEMY_DATABASE_URI"] = (
 
 db.init_app(app)
 
-# =================================================
-# Wait for DB and create tables
-# =================================================
+# Create tables
 with app.app_context():
     for _ in range(10):
         try:
@@ -59,9 +51,7 @@ with app.app_context():
             print("Waiting for database...", e)
             time.sleep(2)
 
-# =================================================
 # Keycloak configuration
-# =================================================
 KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "proiect-scd")
 KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "backend-scd")
 
@@ -76,7 +66,6 @@ else:
 
 
 def get_keycloak():
-    # Client PUBLIC → fără client_secret
     return KeycloakOpenID(
         server_url=KEYCLOAK_INTERNAL,
         client_id=KEYCLOAK_CLIENT_ID,
@@ -100,9 +89,7 @@ def decode_token(token):
         },
     )
 
-# =================================================
 # Routes
-# =================================================
 @app.route("/")
 def home():
     if "access_token" not in session:
