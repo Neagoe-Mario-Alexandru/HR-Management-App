@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  keycloak-db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+    volumes:
+      - keycloak-data:/var/lib/postgresql/data
+    networks:
+      - keycloak-net
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command:
+      - start-dev
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    networks:
+      - keycloak-net
+    depends_on:
+      - keycloak-db
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  auth-service:
+    image: localhost:5000/auth-service:latest
+    environment:
+      KEYCLOAK_URL: "http://keycloak:8080"
+      KEYCLOAK_REALM: "proiect-scd"
+      KEYCLOAK_CLIENT_ID: "backend-service"
+      KEYCLOAK_SECRET: "U5oQeJxCCOl0Ta7soM6Gmd7V9RR3y8Rs"
+    ports:
+      - "5001:5001"
+    networks:
+      - keycloak-net
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
+volumes:
+  keycloak-data:
+
+networks:
+  keycloak-net:
