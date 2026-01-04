@@ -4,3 +4,4 @@ Ce am facut pana acum:
 - baza de date
 - profilul utilizatorului
 - sistemul de request/approve/reject concediu
+- concurenta la approve/reject rezolvata cu approve/reject atomic

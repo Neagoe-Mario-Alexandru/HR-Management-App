@@ -6,6 +6,7 @@ import os
 import time
 import jwt
 
+
 # Environment detection
 IN_DOCKER = os.environ.get("IN_DOCKER", "0") == "1"
 
@@ -140,6 +141,16 @@ def home():
                 </button>
             </a>
         """
+    profiles_button = ""
+    if can_manage_leaves(userinfo):
+        profiles_button = """
+            <a href="/users">
+                <button style="background:#9c27b0;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
+                    Vezi profile angajați
+                </button>
+            </a>
+        """
+
 
     return f"""
     <html>
@@ -152,7 +163,9 @@ def home():
         <div style="margin-top:18px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
             {leave_button}
             {hr_button}
+            {profiles_button}
         </div>
+
 
         <div style="margin-top:22px">
             <a href="/profile"><button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Profile</button></a>
@@ -297,6 +310,59 @@ def view_all_leaves():
     </body>
     </html>
     """
+    
+    
+@app.route("/users")
+def list_users():
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+
+    userinfo = decode_token(session["access_token"])
+    if not can_manage_leaves(userinfo):
+        return "Access denied", 403
+
+    users = UserProfile.query.order_by(UserProfile.username.asc()).all()
+
+    rows = ""
+    for u in users:
+        roles = set((u.role or "").split(","))
+
+        # "useri normali" = au Angajat, dar NU au HR/Administrator
+        if "Angajat" not in roles:
+            continue
+        if "HR" in roles or "Administrator" in roles:
+            continue
+
+        rows += f"""
+        <tr>
+            <td>{(u.username or "").replace("<","&lt;").replace(">","&gt;")}</td>
+            <td>{(u.email or "").replace("<","&lt;").replace(">","&gt;")}</td>
+            <td>{(u.role or "").replace("<","&lt;").replace(">","&gt;")}</td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+    <body style="font-family:Arial;background:#f4f6f8">
+    <div style="background:white;width:900px;max-width:95vw;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
+        <h2>Profile angajați</h2>
+
+        <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse">
+            <tr style="background:#0066ff;color:white">
+                <th align="left">Username</th>
+                <th align="left">Email</th>
+                <th align="left">Roluri</th>
+            </tr>
+            {rows if rows else "<tr><td colspan='3' style='padding:14px'>Nu există angajați.</td></tr>"}
+        </table>
+
+        <br>
+        <a href="/"><button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Back</button></a>
+    </div>
+    </body>
+    </html>
+    """
+
 
 
 # HR – Approve / Reject concediu
@@ -309,15 +375,26 @@ def approve_leave(leave_id):
     if not can_manage_leaves(userinfo):
         return "Access denied", 403
 
-    leave = LeaveRequest.query.get_or_404(leave_id)
-    if leave.status != LeaveStatus.PENDING:
-        return redirect(url_for("view_all_leaves"))
-
-    leave.status = LeaveStatus.APPROVED
-    leave.approved_by = userinfo["sub"]
+    updated = (
+        LeaveRequest.query
+        .filter(LeaveRequest.id == leave_id, LeaveRequest.status == LeaveStatus.PENDING)
+        .update(
+            {
+                LeaveRequest.status: LeaveStatus.APPROVED,
+                LeaveRequest.approved_by: userinfo["sub"],
+            },
+            synchronize_session=False
+        )
+    )
     db.session.commit()
 
+    # dacă updated == 0 => alt HR a procesat deja cererea
+    # poți doar redirect sau mesaj 409
+    if updated == 0:
+        return "Cererea a fost deja procesată de alt HR.", 409
+
     return redirect(url_for("view_all_leaves"))
+
 
 
 @app.route("/leave/<int:leave_id>/reject", methods=["POST"])
@@ -329,15 +406,24 @@ def reject_leave(leave_id):
     if not can_manage_leaves(userinfo):
         return "Access denied", 403
 
-    leave = LeaveRequest.query.get_or_404(leave_id)
-    if leave.status != LeaveStatus.PENDING:
-        return redirect(url_for("view_all_leaves"))
-
-    leave.status = LeaveStatus.REJECTED
-    leave.approved_by = userinfo["sub"]
+    updated = (
+        LeaveRequest.query
+        .filter(LeaveRequest.id == leave_id, LeaveRequest.status == LeaveStatus.PENDING)
+        .update(
+            {
+                LeaveRequest.status: LeaveStatus.REJECTED,
+                LeaveRequest.approved_by: userinfo["sub"],
+            },
+            synchronize_session=False
+        )
+    )
     db.session.commit()
 
+    if updated == 0:
+        return "Cererea a fost deja procesată de alt HR.", 409
+
     return redirect(url_for("view_all_leaves"))
+
 
 
 # Login

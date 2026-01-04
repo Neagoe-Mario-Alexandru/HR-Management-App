@@ -34,7 +34,7 @@ services:
         constraints:
           - node.role == manager
 
-  # 🔹 NEW: database for auth-service
+
   profile-db:
     image: postgres:15
     environment:
