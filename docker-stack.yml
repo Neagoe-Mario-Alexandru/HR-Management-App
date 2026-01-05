@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   keycloak-db:
@@ -34,7 +34,6 @@ services:
         constraints:
           - node.role == manager
 
-
   profile-db:
     image: postgres:15
     environment:
@@ -49,19 +48,35 @@ services:
   auth-service:
     build: .
     image: auth-service:latest
+    networks:
+      - backend
+    ports:
+      - "5001:5001"
+    depends_on:
+      - keycloak
+      - profile-db
+
+    secrets:
+      - gmail_app_pass_v2
+
     environment:
       IN_DOCKER: "1"
       KEYCLOAK_URL: "http://keycloak:8080"
       KEYCLOAK_REALM: "proiect-scd"
       KEYCLOAK_CLIENT_ID: "backend-scd"
       KEYCLOAK_SECRET: "U5oQeJxCCOl0Ta7soM6Gmd7V9RR3y8Rs"
-    ports:
-      - "5001:5001"
-    networks:
-      - backend
-    depends_on:
-      - keycloak
-      - profile-db
+
+      # ✅ Gmail SMTP
+      SMTP_HOST: "smtp.gmail.com"
+      SMTP_PORT: "587"
+      SMTP_USE_TLS: "1"
+      SMTP_USER: "marioalexn@gmail.com"
+      SMTP_PASS_FILE: "/run/secrets/gmail_app_pass_v2"
+      SMTP_FROM: "Sistem Concedii <marioalexn@gmail.com>"
+
+      # (recomandat)
+      SMTP_TIMEOUT: "20"
+
     deploy:
       replicas: 1
       placement:
@@ -74,3 +89,7 @@ networks:
 volumes:
   keycloak-data:
   profile-data:
+
+secrets:
+  gmail_app_pass_v2:
+    external: true

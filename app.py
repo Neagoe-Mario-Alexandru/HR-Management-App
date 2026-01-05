@@ -5,6 +5,30 @@ from datetime import datetime
 import os
 import time
 import jwt
+import smtplib
+from email.message import EmailMessage
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("app")
+
+def read_secret_file(path: str) -> str:
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
+SMTP_PASS_FILE = os.environ.get("SMTP_PASS_FILE", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER or "no-reply@example.com")
+SMTP_USE_TLS = os.environ.get("SMTP_USE_TLS", "1") == "1"
+
+if SMTP_PASS_FILE and not SMTP_PASS:
+    SMTP_PASS = read_secret_file(SMTP_PASS_FILE)
+
 
 
 # Environment detection
@@ -103,6 +127,64 @@ def username_for_sub(sub):
         return "-"
     u = UserProfile.query.filter_by(keycloak_id=sub).first()
     return u.username if u and u.username else sub
+
+def send_email(to_email: str, subject: str, body: str):
+    if not to_email:
+        logger.warning("No recipient email -> skip send")
+        return
+
+    if not SMTP_HOST:
+        logger.warning("SMTP_HOST not set -> skip send")
+        return
+
+    logger.info("Sending email via %s:%s to=%s from=%s subj=%s",
+                SMTP_HOST, SMTP_PORT, to_email, SMTP_FROM, subject)
+
+    msg = EmailMessage()
+    msg["From"] = SMTP_FROM
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+        if SMTP_USE_TLS:
+            server.starttls()
+        if SMTP_USER:
+            server.login(SMTP_USER, SMTP_PASS)
+        server.send_message(msg)
+
+    logger.info("Email sent OK to=%s", to_email)
+
+        
+def email_for_sub(sub):
+    if not sub:
+        return None
+    u = UserProfile.query.filter_by(keycloak_id=sub).first()
+    return u.email if u else None
+
+
+def build_leave_email(status: LeaveStatus, leave: LeaveRequest):
+    emp_username = username_for_sub(leave.user_id)
+    approver = username_for_sub(leave.approved_by)
+
+    subject = f"Cererea ta de concediu a fost {status.value}"
+    body = f"""Salut, {emp_username}
+
+Cererea ta de concediu a fost {status.value}.
+
+Detalii:
+- Perioadă: {leave.start_date} -> {leave.end_date}
+- Motiv: {leave.reason or "-"}
+- Status: {status.value}
+- Procesată de: {approver}
+- Data cererii: {leave.created_at.strftime('%Y-%m-%d')}
+
+Mulțumim,
+Sistem Concedii
+"""
+    return subject, body
+
+
 
 
 
@@ -388,12 +470,22 @@ def approve_leave(leave_id):
     )
     db.session.commit()
 
-    # dacă updated == 0 => alt HR a procesat deja cererea
-    # poți doar redirect sau mesaj 409
     if updated == 0:
         return "Cererea a fost deja procesată de alt HR.", 409
 
+    # ✅ după ce a reușit update-ul, citim cererea și trimitem email
+    leave = LeaveRequest.query.get_or_404(leave_id)
+    emp_email = email_for_sub(leave.user_id)
+    subject, body = build_leave_email(LeaveStatus.APPROVED, leave)
+
+    try:
+        logger.info("emp_email=%s leave_id=%s user_id=%s", emp_email, leave_id, leave.user_id)
+        send_email(emp_email, subject, body)
+    except Exception as e:
+        print("Email send failed:", e)
+
     return redirect(url_for("view_all_leaves"))
+
 
 
 
@@ -422,7 +514,17 @@ def reject_leave(leave_id):
     if updated == 0:
         return "Cererea a fost deja procesată de alt HR.", 409
 
+    leave = LeaveRequest.query.get_or_404(leave_id)
+    emp_email = email_for_sub(leave.user_id)
+    subject, body = build_leave_email(LeaveStatus.REJECTED, leave)
+
+    try:
+        send_email(emp_email, subject, body)
+    except Exception as e:
+        print("Email send failed:", e)
+
     return redirect(url_for("view_all_leaves"))
+
 
 
 
