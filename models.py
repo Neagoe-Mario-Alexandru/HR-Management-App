@@ -53,3 +53,76 @@ class LeaveRequest(db.Model):
             "approved_by": self.approved_by,
             "created_at": self.created_at.isoformat(),
         }
+
+
+# ==========================
+# Expense reimbursement (Deconturi)
+# ==========================
+
+class ExpenseStatus(PyEnum):
+    PENDING = "PENDING"             # creat de angajat, așteaptă HR
+    HR_APPROVED = "HR_APPROVED"     # aprobat de HR, așteaptă Administrator
+    QUEUED = "QUEUED"               # admin a aprobat și s-a trimis în RabbitMQ
+    PROCESSING = "PROCESSING"       # worker procesează
+    PAID = "PAID"                   # Stripe OK
+    FAILED = "FAILED"               # eroare tehnică/Stripe
+    REJECTED = "REJECTED"           # respins (HR sau Admin)
+    CANCELED = "CANCELED"
+
+
+class ExpenseClaim(db.Model):
+    """
+    Cerere de decont (expense reimbursement).
+    Observatie: Stripe are mai multe abordari.
+    Minim: salvezi un PaymentIntent id sau un Transfer/Payout id (in functie de flow-ul tau).
+    """
+    __tablename__ = "expense_claims"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # Keycloak sub (angajat)
+    user_id = db.Column(db.String(255), nullable=False, index=True)
+
+    # bani
+    amount_cents = db.Column(db.Integer, nullable=False)
+    currency = db.Column(db.String(10), nullable=False, default="ron")
+
+    description = db.Column(db.Text, nullable=True)
+
+    # status
+    status = db.Column(
+        db.Enum(ExpenseStatus, name="expense_status"),
+        default=ExpenseStatus.PENDING,
+        nullable=False,
+        index=True
+    )
+
+    # Stripe fields (optional, depinde de implementare)
+    stripe_payment_intent_id = db.Column(db.String(255), nullable=True)
+    stripe_charge_id = db.Column(db.String(255), nullable=True)
+
+    # pentru erori
+    failure_reason = db.Column(db.Text, nullable=True)
+
+    # optional: cine a aprobat decontul (daca ai un flow de aprobare)
+    approved_by = db.Column(db.String(255), nullable=True)
+
+    # timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "amount_cents": self.amount_cents,
+            "currency": self.currency,
+            "description": self.description,
+            "status": self.status.value,
+            "stripe_payment_intent_id": self.stripe_payment_intent_id,
+            "stripe_charge_id": self.stripe_charge_id,
+            "failure_reason": self.failure_reason,
+            "approved_by": self.approved_by,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }

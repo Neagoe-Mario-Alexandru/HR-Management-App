@@ -45,6 +45,18 @@ services:
     networks:
       - backend
 
+  rabbitmq:
+    image: rabbitmq:3-management
+    networks:
+      - backend
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
   auth-service:
     build: .
     image: auth-service:latest
@@ -55,6 +67,7 @@ services:
     depends_on:
       - keycloak
       - profile-db
+      - rabbitmq
 
     secrets:
       - gmail_app_pass_v2
@@ -73,9 +86,51 @@ services:
       SMTP_USER: "marioalexn@gmail.com"
       SMTP_PASS_FILE: "/run/secrets/gmail_app_pass_v2"
       SMTP_FROM: "Sistem Concedii <marioalexn@gmail.com>"
-
-      # (recomandat)
       SMTP_TIMEOUT: "20"
+
+      # ✅ RabbitMQ
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      EXPENSES_EXCHANGE: "expenses"
+      EXPENSES_ROUTING_KEY: "expense.requested"
+
+      # ✅ Stripe (pune cheia ta test)
+      STRIPE_SECRET_KEY: "sk_test_xxx"
+
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
+  expense-worker:
+    build: .
+    image: auth-service:latest
+    networks:
+      - backend
+    depends_on:
+      - profile-db
+      - rabbitmq
+    command: ["python", "expense_worker.py"]
+    environment:
+      IN_DOCKER: "1"
+
+      # DB (worker-ul folosește aceeași configurație ca app.py)
+      DB_USER: "profile"
+      DB_PASS: "profile"
+      DB_NAME: "profile"
+
+      # ✅ RabbitMQ
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      EXPENSES_EXCHANGE: "expenses"
+      EXPENSES_QUEUE: "expenses.process"
+      EXPENSES_BIND_KEY: "expense.requested"
+
+      # ✅ Events către notificări
+      NOTIFY_EXCHANGE: "notifications"
+      NOTIFY_ROUTING_KEY: "notify.expense"
+
+      # ✅ Stripe
+      STRIPE_SECRET_KEY: "sk_test_xxx"
 
     deploy:
       replicas: 1
