@@ -3,6 +3,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 
 
+
 class UserProfile(db.Model):
     __tablename__ = "users"
 
@@ -60,13 +61,13 @@ class LeaveRequest(db.Model):
 # ==========================
 
 class ExpenseStatus(PyEnum):
-    PENDING = "PENDING"             # creat de angajat, așteaptă HR
-    HR_APPROVED = "HR_APPROVED"     # aprobat de HR, așteaptă Administrator
-    QUEUED = "QUEUED"               # admin a aprobat și s-a trimis în RabbitMQ
-    PROCESSING = "PROCESSING"       # worker procesează
-    PAID = "PAID"                   # Stripe OK
-    FAILED = "FAILED"               # eroare tehnică/Stripe
-    REJECTED = "REJECTED"           # respins (HR sau Admin)
+    PENDING = "PENDING"
+    HR_APPROVED = "HR_APPROVED"
+    QUEUED = "QUEUED"
+    PROCESSING = "PROCESSING"
+    PAID = "PAID"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"
     CANCELED = "CANCELED"
 
 

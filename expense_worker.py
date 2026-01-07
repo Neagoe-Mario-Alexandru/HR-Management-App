@@ -83,19 +83,12 @@ def _mark_failed(exp: ExpenseClaim, reason: str) -> None:
 
 
 def _should_process_now(exp: ExpenseClaim) -> bool:
-    """
-    Decide if this expense should be processed (Stripe) now.
-
-    Default behavior (recommended):
-      - Only process when status == APPROVED.
-      - Expenses newly created by employee stay QUEUED/WAITING.
-    """
     if WORKER_AUTO_PROCESS:
-        # legacy/demo behavior: process everything except finalized
         return exp.status not in (ExpenseStatus.PAID, ExpenseStatus.FAILED, ExpenseStatus.CANCELED)
 
-    # Recommended: require approval
-    return exp.status == getattr(ExpenseStatus, "APPROVED", None)
+    # ✅ procesează doar după ce Admin a aprobat și a pus QUEUED
+    return exp.status == ExpenseStatus.QUEUED
+
 
 
 def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -> None:

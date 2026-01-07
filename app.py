@@ -219,7 +219,11 @@ Sistem Concedii
     return subject, body
 
 
+def is_hr(userinfo):
+    return has_role(userinfo, "HR")
 
+def is_admin(userinfo):
+    return has_role(userinfo, "Administrator")
 
 
 # Home
@@ -239,7 +243,7 @@ def home():
     email = userinfo.get("email")
     roles = visible_roles_from_token(userinfo)
 
-    # Angajat: butoane
+    # Angajat
     leave_button = ""
     expense_button = ""
     my_leaves_button = ""
@@ -275,13 +279,14 @@ def home():
             </a>
         """
 
-    # HR/Admin: butoane
-    hr_button = ""
+    # HR/Admin
+    hr_leaves_button = ""
     profiles_button = ""
     expenses_hr_button = ""
+    expenses_admin_button = ""
 
-    if can_manage_leaves(userinfo):
-        hr_button = """
+    if is_hr(userinfo):
+        hr_leaves_button = """
             <a href="/leave/all">
                 <button style="background:#ff9800;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
                     Vezi cereri concediu
@@ -296,9 +301,32 @@ def home():
             </a>
         """
         expenses_hr_button = """
-            <a href="/expenses/all">
+            <a href="/expenses/hr">
                 <button style="background:#795548;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
-                    Vezi cereri de decont
+                    Deconturi (HR)
+                </button>
+            </a>
+        """
+
+    if is_admin(userinfo):
+        expenses_admin_button = """
+            <a href="/expenses/admin">
+                <button style="background:#607d8b;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
+                    Deconturi (Admin)
+                </button>
+            </a>
+        """
+        profiles_button = """
+            <a href="/users">
+                <button style="background:#9c27b0;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
+                    Vezi profile angajați
+                </button>
+            </a>
+        """
+        hr_leaves_button = """
+            <a href="/leave/all">
+                <button style="background:#ff9800;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
+                    Vezi cereri concediu
                 </button>
             </a>
         """
@@ -317,26 +345,257 @@ def home():
             {my_leaves_button}
             {my_expenses_button}
             {expenses_hr_button}
-            {hr_button}
+            {expenses_admin_button}
+            {hr_leaves_button}
             {profiles_button}
         </div>
 
         <div style="margin-top:22px">
             <a href="/profile">
-                <button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
-                    Profile
-                </button>
+                <button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Profile</button>
             </a>
             <a href="/logout">
-                <button style="background:#cc0000;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
-                    Logout
-                </button>
+                <button style="background:#cc0000;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Logout</button>
             </a>
         </div>
     </div>
     </body>
     </html>
     """
+    
+# Deconturi - HR
+@app.route("/expenses/hr")
+def view_hr_expenses():
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+
+    userinfo = decode_token(session["access_token"])
+    if not (is_hr(userinfo) or is_admin(userinfo)):
+        return "Access denied", 403
+
+    items = (ExpenseClaim.query
+             .filter(ExpenseClaim.status == ExpenseStatus.PENDING)
+             .order_by(ExpenseClaim.created_at.desc())
+             .all())
+
+    rows = ""
+    for e in items:
+        employee_name = username_for_sub(e.user_id)
+        actions = f"""
+        <div style="display:flex;gap:8px;justify-content:center">
+          <form method="post" action="/expenses/{e.id}/hr/approve" style="margin:0">
+            <button style="background:#28a745;color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer">Approve</button>
+          </form>
+          <form method="post" action="/expenses/{e.id}/hr/reject" style="margin:0">
+            <button style="background:#cc0000;color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer">Reject</button>
+          </form>
+        </div>
+        """
+
+        rows += f"""
+        <tr>
+          <td>{e.id}</td>
+          <td>{employee_name}</td>
+          <td>{e.amount_cents}</td>
+          <td>{(e.currency or "").upper()}</td>
+          <td>{(e.description or "").replace("<","&lt;").replace(">","&gt;")}</td>
+          <td><strong>{e.status.value}</strong></td>
+          <td>{e.created_at.strftime('%Y-%m-%d')}</td>
+          <td>{actions}</td>
+        </tr>
+        """
+
+    return f"""
+    <html><body style="font-family:Arial;background:#f4f6f8">
+    <div style="background:white;width:1100px;max-width:95vw;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
+      <h2>Cereri de decont (HR) – PENDING</h2>
+
+      <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse">
+        <tr style="background:#0066ff;color:white">
+          <th align="left">ID</th>
+          <th align="left">User</th>
+          <th align="left">Amount (cents)</th>
+          <th align="left">Currency</th>
+          <th align="left">Description</th>
+          <th align="left">Status</th>
+          <th align="left">Created</th>
+          <th align="center">Actions</th>
+        </tr>
+        {rows if rows else "<tr><td colspan='8' style='padding:14px'>Nu există cereri PENDING.</td></tr>"}
+      </table>
+
+      <br>
+      <a href="/"><button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Back</button></a>
+    </div>
+    </body></html>
+    """
+
+@app.route("/expenses/<int:expense_id>/hr/approve", methods=["POST"])
+def hr_approve_expense(expense_id):
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+
+    userinfo = decode_token(session["access_token"])
+    if not (is_hr(userinfo) or is_admin(userinfo)):
+        return "Access denied", 403
+
+    exp = ExpenseClaim.query.get_or_404(expense_id)
+    if exp.status != ExpenseStatus.PENDING:
+        return "Expense already processed", 409
+
+    exp.status = ExpenseStatus.HR_APPROVED
+    exp.approved_by = userinfo["sub"]
+    db.session.commit()
+
+    return redirect(url_for("view_hr_expenses"))
+
+
+@app.route("/expenses/<int:expense_id>/hr/reject", methods=["POST"])
+def hr_reject_expense(expense_id):
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+
+    userinfo = decode_token(session["access_token"])
+    if not (is_hr(userinfo) or is_admin(userinfo)):
+        return "Access denied", 403
+
+    exp = ExpenseClaim.query.get_or_404(expense_id)
+    if exp.status != ExpenseStatus.PENDING:
+        return "Expense already processed", 409
+
+    exp.status = ExpenseStatus.REJECTED
+    exp.failure_reason = "Rejected by HR"
+    exp.approved_by = userinfo["sub"]
+    db.session.commit()
+
+    return redirect(url_for("view_hr_expenses"))
+
+
+@app.route("/expenses/admin")
+def view_admin_expenses():
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+
+    userinfo = decode_token(session["access_token"])
+    if not is_admin(userinfo):
+        return "Access denied", 403
+
+    items = (ExpenseClaim.query
+             .filter(ExpenseClaim.status == ExpenseStatus.HR_APPROVED)
+             .order_by(ExpenseClaim.created_at.desc())
+             .all())
+
+    rows = ""
+    for e in items:
+        employee_name = username_for_sub(e.user_id)
+        actions = f"""
+        <div style="display:flex;gap:8px;justify-content:center">
+          <form method="post" action="/expenses/{e.id}/admin/approve" style="margin:0">
+            <button style="background:#28a745;color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer">Approve</button>
+          </form>
+          <form method="post" action="/expenses/{e.id}/admin/reject" style="margin:0">
+            <button style="background:#cc0000;color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer">Reject</button>
+          </form>
+        </div>
+        """
+
+        rows += f"""
+        <tr>
+          <td>{e.id}</td>
+          <td>{employee_name}</td>
+          <td>{e.amount_cents}</td>
+          <td>{(e.currency or "").upper()}</td>
+          <td>{(e.description or "").replace("<","&lt;").replace(">","&gt;")}</td>
+          <td><strong>{e.status.value}</strong></td>
+          <td>{e.created_at.strftime('%Y-%m-%d')}</td>
+          <td>{actions}</td>
+        </tr>
+        """
+
+    return f"""
+    <html><body style="font-family:Arial;background:#f4f6f8">
+    <div style="background:white;width:1100px;max-width:95vw;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
+      <h2>Cereri de decont (Admin) – HR_APPROVED</h2>
+
+      <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse">
+        <tr style="background:#0066ff;color:white">
+          <th align="left">ID</th>
+          <th align="left">User</th>
+          <th align="left">Amount (cents)</th>
+          <th align="left">Currency</th>
+          <th align="left">Description</th>
+          <th align="left">Status</th>
+          <th align="left">Created</th>
+          <th align="center">Actions</th>
+        </tr>
+        {rows if rows else "<tr><td colspan='8' style='padding:14px'>Nu există cereri HR_APPROVED.</td></tr>"}
+      </table>
+
+      <br>
+      <a href="/"><button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Back</button></a>
+    </div>
+    </body></html>
+    """
+
+
+@app.route("/expenses/<int:expense_id>/admin/approve", methods=["POST"])
+def admin_approve_expense(expense_id):
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+
+    userinfo = decode_token(session["access_token"])
+    if not is_admin(userinfo):
+        return "Access denied", 403
+
+    exp = ExpenseClaim.query.get_or_404(expense_id)
+    if exp.status != ExpenseStatus.HR_APPROVED:
+        return "Expense not ready for admin approval", 409
+
+    # 1) întâi marchezi în DB că e gata de procesare
+    exp.status = ExpenseStatus.QUEUED
+    exp.approved_by = userinfo["sub"]  # optional, dar util
+    db.session.commit()
+
+    # 2) abia după publish
+    trace_id = str(uuid.uuid4())
+    msg = {
+        "event": "expense.requested",
+        "expense_id": exp.id,
+        "user_id": exp.user_id,
+        "amount_cents": exp.amount_cents,
+        "currency": exp.currency,
+        "description": exp.description,
+        "requested_at": datetime.utcnow().isoformat() + "Z",
+        "trace_id": trace_id,
+        "approved_by": userinfo["sub"],
+        "approved_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+    rabbit_publish(EXPENSES_EXCHANGE, EXPENSES_ROUTING_KEY, msg)
+
+    return redirect(url_for("view_admin_expenses"))
+
+
+
+@app.route("/expenses/<int:expense_id>/admin/reject", methods=["POST"])
+def admin_reject_expense(expense_id):
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+
+    userinfo = decode_token(session["access_token"])
+    if not is_admin(userinfo):
+        return "Access denied", 403
+
+    exp = ExpenseClaim.query.get_or_404(expense_id)
+    if exp.status != ExpenseStatus.HR_APPROVED:
+        return "Expense not ready for admin decision", 409
+
+    exp.status = ExpenseStatus.REJECTED
+    exp.failure_reason = "Rejected by Administrator"
+    db.session.commit()
+
+    return redirect(url_for("view_admin_expenses"))
+
 
 
 @app.route("/leave/my")
@@ -781,135 +1040,6 @@ def reject_leave(leave_id):
     return redirect(url_for("view_all_leaves"))
 
 
-@app.route("/expenses/all")
-def view_all_expenses():
-    if "access_token" not in session:
-        return redirect(url_for("home"))
-
-    userinfo = decode_token(session["access_token"])
-    if not can_manage_leaves(userinfo):
-        return "Access denied", 403
-
-    items = ExpenseClaim.query.order_by(ExpenseClaim.created_at.desc()).all()
-
-    rows = ""
-    for e in items:
-        employee_name = username_for_sub(e.user_id)
-
-        actions = "-"
-        if e.status == ExpenseStatus.PENDING:
-            actions = f"""
-            <div style="display:flex;gap:8px;justify-content:center">
-              <form method="post" action="/expenses/{e.id}/approve" style="margin:0">
-                <button style="background:#28a745;color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer">Approve</button>
-              </form>
-              <form method="post" action="/expenses/{e.id}/reject" style="margin:0">
-                <button style="background:#cc0000;color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer">Reject</button>
-              </form>
-            </div>
-            """
-
-        rows += f"""
-        <tr>
-          <td>{e.id}</td>
-          <td>{employee_name}</td>
-          <td>{e.amount_cents}</td>
-          <td>{(e.currency or "").upper()}</td>
-          <td>{(e.description or "").replace("<","&lt;").replace(">","&gt;")}</td>
-          <td><strong>{e.status.value}</strong></td>
-          <td>{e.created_at.strftime('%Y-%m-%d')}</td>
-          <td>{actions}</td>
-        </tr>
-        """
-
-    return f"""
-    <html><body style="font-family:Arial;background:#f4f6f8">
-    <div style="background:white;width:1100px;max-width:95vw;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
-      <h2>Cereri de decont</h2>
-
-      <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse">
-        <tr style="background:#0066ff;color:white">
-          <th align="left">ID</th>
-          <th align="left">User</th>
-          <th align="left">Amount (cents)</th>
-          <th align="left">Currency</th>
-          <th align="left">Description</th>
-          <th align="left">Status</th>
-          <th align="left">Created</th>
-          <th align="center">Actions</th>
-        </tr>
-        {rows if rows else "<tr><td colspan='8' style='padding:14px'>Nu există cereri.</td></tr>"}
-      </table>
-
-      <br>
-      <a href="/"><button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Back</button></a>
-    </div>
-    </body></html>
-    """
-    
-    
-    
-@app.route("/expenses/<int:expense_id>/approve", methods=["POST"])
-def approve_expense(expense_id):
-    if "access_token" not in session:
-        return redirect(url_for("home"))
-
-    userinfo = decode_token(session["access_token"])
-    if not can_manage_leaves(userinfo):
-        return "Access denied", 403
-
-    exp = ExpenseClaim.query.get_or_404(expense_id)
-
-    # doar PENDING poate fi aprobat
-    if exp.status != ExpenseStatus.PENDING:
-        return "Expense already processed", 409
-
-    trace_id = str(uuid.uuid4())
-    msg = {
-        "event": "expense.requested",
-        "expense_id": exp.id,
-        "user_id": exp.user_id,
-        "amount_cents": exp.amount_cents,
-        "currency": exp.currency,
-        "description": exp.description,
-        "requested_at": datetime.utcnow().isoformat() + "Z",
-        "trace_id": trace_id,
-        "approved_by": userinfo["sub"],
-        "approved_at": datetime.utcnow().isoformat() + "Z",
-    }
-
-    rabbit_publish(EXPENSES_EXCHANGE, EXPENSES_ROUTING_KEY, msg)
-
-    exp.status = ExpenseStatus.QUEUED
-    exp.approved_by = userinfo["sub"]
-    db.session.commit()
-
-    return redirect(url_for("view_all_expenses"))
-
-
-@app.route("/expenses/<int:expense_id>/reject", methods=["POST"])
-def reject_expense(expense_id):
-    if "access_token" not in session:
-        return redirect(url_for("home"))
-
-    userinfo = decode_token(session["access_token"])
-    if not can_manage_leaves(userinfo):
-        return "Access denied", 403
-
-    exp = ExpenseClaim.query.get_or_404(expense_id)
-
-    if exp.status != ExpenseStatus.PENDING:
-        return "Expense already processed", 409
-
-    exp.status = ExpenseStatus.REJECTED  # sau FAILED + reason
-    exp.approved_by = userinfo["sub"]
-    exp.failure_reason = "Rejected by HR"
-    db.session.commit()
-
-    return redirect(url_for("view_all_expenses"))
-
-
-
 
 # Login
 @app.route("/login")
@@ -970,66 +1100,7 @@ def logout():
         f"&post_logout_redirect_uri=http://localhost:{FLASK_PORT}"
     )
 
-@app.route("/api/expenses", methods=["POST"])
-def create_expense():
-    if "access_token" not in session:
-        return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
-    if not has_role(userinfo, "Angajat"):
-        return "Access denied", 403
-
-    data = request.get_json(force=True)
-    amount_cents = int(data["amount_cents"])
-    currency = (data.get("currency") or "ron").lower()
-    description = data.get("description")
-
-    exp = ExpenseClaim(
-        user_id=userinfo["sub"],
-        amount_cents=amount_cents,
-        currency=currency,
-        description=description,
-        status=ExpenseStatus.PENDING,
-    )
-    db.session.add(exp)
-    db.session.commit()
-
-    # trimitem mesaj in RabbitMQ
-    trace_id = str(uuid.uuid4())
-    msg = {
-        "event": "expense.requested",
-        "expense_id": exp.id,
-        "user_id": exp.user_id,
-        "amount_cents": exp.amount_cents,
-        "currency": exp.currency,
-        "description": exp.description,
-        "requested_at": datetime.utcnow().isoformat() + "Z",
-        "trace_id": trace_id,
-    }
-
-    rabbit_publish(EXPENSES_EXCHANGE, EXPENSES_ROUTING_KEY, msg)
-
-    exp.status = ExpenseStatus.QUEUED
-    db.session.commit()
-
-    return jsonify(exp.to_dict()), 201
-
-
-
-@app.route("/api/expenses", methods=["GET"])
-def list_my_expenses():
-    if "access_token" not in session:
-        return redirect(url_for("home"))
-
-    userinfo = decode_token(session["access_token"])
-    if not has_role(userinfo, "Angajat"):
-        return "Access denied", 403
-
-    items = (ExpenseClaim.query
-             .filter_by(user_id=userinfo["sub"])
-             .order_by(ExpenseClaim.created_at.desc())
-             .all())
-    return jsonify([x.to_dict() for x in items])
 
 
 
