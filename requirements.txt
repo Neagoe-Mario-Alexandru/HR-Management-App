@@ -6,3 +6,4 @@ gunicorn
 PyJWT
 pika
 stripe
+redis

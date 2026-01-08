@@ -1,6 +1,7 @@
 version: "3.8"
 
 services:
+
   keycloak-db:
     image: postgres:15
     environment:
@@ -14,8 +15,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:24.0
-    command:
-      - start-dev
+    command: ["start-dev"]
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
@@ -34,6 +34,8 @@ services:
         constraints:
           - node.role == manager
 
+
+
   profile-db:
     image: postgres:15
     environment:
@@ -45,41 +47,59 @@ services:
     networks:
       - backend
 
+
+
   rabbitmq:
     image: rabbitmq:3-management
-    networks:
-      - backend
     ports:
       - "5672:5672"
       - "15672:15672"
+    networks:
+      - backend
     deploy:
       placement:
         constraints:
           - node.role == manager
 
+
+
+  redis:
+    image: redis:7
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+
+
   auth-service:
     build: .
     image: auth-service:latest
-    networks:
-      - backend
     ports:
       - "5001:5001"
+    networks:
+      - backend
     depends_on:
       - keycloak
       - profile-db
       - rabbitmq
+      - redis
 
     secrets:
       - gmail_app_pass_v2
 
     environment:
       IN_DOCKER: "1"
+
+
       KEYCLOAK_URL: "http://keycloak:8080"
       KEYCLOAK_REALM: "proiect-scd"
       KEYCLOAK_CLIENT_ID: "backend-scd"
       KEYCLOAK_SECRET: "U5oQeJxCCOl0Ta7soM6Gmd7V9RR3y8Rs"
 
-      # ✅ Gmail SMTP
+
       SMTP_HOST: "smtp.gmail.com"
       SMTP_PORT: "587"
       SMTP_USE_TLS: "1"
@@ -88,13 +108,16 @@ services:
       SMTP_FROM: "Sistem Concedii <marioalexn@gmail.com>"
       SMTP_TIMEOUT: "20"
 
-      # ✅ RabbitMQ
+
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       EXPENSES_EXCHANGE: "expenses"
       EXPENSES_ROUTING_KEY: "expense.requested"
 
-      # ✅ Stripe (pune cheia ta test)
+
       STRIPE_SECRET_KEY: ""
+
+
+      REDIS_URL: "redis://redis:6379/0"
 
     deploy:
       replicas: 1
@@ -102,34 +125,34 @@ services:
         constraints:
           - node.role == manager
 
+
+
   expense-worker:
     build: .
     image: expense-worker:latest
+    command: ["python", "expense_worker.py"]
     networks:
       - backend
     depends_on:
       - profile-db
       - rabbitmq
-    command: ["python", "expense_worker.py"]
+
     environment:
       IN_DOCKER: "1"
 
-      # DB (worker-ul folosește aceeași configurație ca app.py)
+
       DB_USER: "profile"
       DB_PASS: "profile"
       DB_NAME: "profile"
 
-      # ✅ RabbitMQ
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       EXPENSES_EXCHANGE: "expenses"
       EXPENSES_QUEUE: "expenses.process"
       EXPENSES_BIND_KEY: "expense.requested"
 
-      # ✅ Events către notificări
       NOTIFY_EXCHANGE: "notifications"
       NOTIFY_ROUTING_KEY: "notify.expense"
 
-      # ✅ Stripe
       STRIPE_SECRET_KEY: ""
 
     deploy:
@@ -138,12 +161,15 @@ services:
         constraints:
           - node.role == manager
 
+
 networks:
   backend:
+
 
 volumes:
   keycloak-data:
   profile-data:
+
 
 secrets:
   gmail_app_pass_v2:

@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify, redirect, session, url_for
 from keycloak import KeycloakOpenID
 from models import db, UserProfile, LeaveRequest, LeaveStatus, ExpenseClaim, ExpenseStatus
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import time
 import jwt
@@ -10,8 +10,8 @@ import json
 from email.message import EmailMessage
 import logging
 import pika
-import stripe
 import uuid
+import redis
 from datetime import datetime
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
@@ -40,6 +40,35 @@ if SMTP_PASS_FILE and not SMTP_PASS:
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
 EXPENSES_EXCHANGE = os.environ.get("EXPENSES_EXCHANGE", "expenses")
 EXPENSES_ROUTING_KEY = os.environ.get("EXPENSES_ROUTING_KEY", "expense.requested")
+
+
+#Redis
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+
+
+#Rate limiting function
+MAX_EXPENSES_PER_DAY = 5
+
+def check_expense_rate_limit(user_id: str) -> bool:
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    key = f"expense_limit:{user_id}:{today}"
+
+    current = redis_client.get(key)
+    if current and int(current) >= MAX_EXPENSES_PER_DAY:
+        return False
+
+    if not current:
+        now = datetime.utcnow()
+        tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0)
+        ttl = int((tomorrow - now).total_seconds())
+
+        redis_client.set(key, 1, ex=ttl)
+    else:
+        redis_client.incr(key)
+
+    return True
+
 
 
 
@@ -796,7 +825,33 @@ def expense_request():
     if not has_role(userinfo, "Angajat"):
         return "Access denied", 403
 
+    user_id = userinfo["sub"]
+
     if request.method == "POST":
+        # ===============================
+        # 🔒 RATE LIMIT: max 5 / zi / user
+        # ===============================
+        if not check_expense_rate_limit(user_id):
+            return """
+            <html><body style="font-family:Arial;background:#f4f6f8">
+            <div style="background:white;width:480px;margin:60px auto;padding:30px;
+                        border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1);
+                        text-align:center">
+              <h3 style="color:#cc0000">Limită depășită</h3>
+              <p>Ai atins limita de <strong>5 cereri de decont pe zi</strong>.</p>
+              <p>Încearcă din nou mâine.</p>
+              <br>
+              <a href="/"><button style="background:#0066ff;color:white;border:none;
+              padding:10px 14px;border-radius:8px;cursor:pointer">
+                Înapoi
+              </button></a>
+            </div>
+            </body></html>
+            """, 429
+
+        # ===============================
+        # Date din formular
+        # ===============================
         amount_str = request.form.get("amount", "").strip()
         currency = (request.form.get("currency") or "ron").strip().lower()
         description = request.form.get("description")
@@ -808,40 +863,54 @@ def expense_request():
         except ValueError:
             return "Suma invalidă", 400
 
+        # ===============================
+        # Creează cererea de decont
+        # ===============================
         exp = ExpenseClaim(
-            user_id=userinfo["sub"],
-            amount=amount,  # store standard float, not cents
+            user_id=user_id,
+            amount=amount,  # float, nu cents
             currency=currency,
             description=description,
             status=ExpenseStatus.PENDING,
         )
+
         db.session.add(exp)
         db.session.commit()
 
         return redirect(url_for("my_expenses"))
 
-    # Form HTML
+    # ===============================
+    # GET – formular HTML
+    # ===============================
     return """
     <html><body style="font-family:Arial;background:#f4f6f8">
-    <div style="background:white;width:480px;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
+    <div style="background:white;width:480px;margin:60px auto;padding:30px;
+                border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
       <h2>Cerere de decont</h2>
 
       <form method="post">
         Suma (ex: 123.45):<br>
-        <input type="number" name="amount" min="0.01" step="0.01" required style="padding:8px;width:100%"><br><br>
+        <input type="number" name="amount" min="0.01" step="0.01" required
+               style="padding:8px;width:100%"><br><br>
 
         Monedă:<br>
-        <input type="text" name="currency" value="ron" required style="padding:8px;width:100%"><br><br>
+        <input type="text" name="currency" value="ron" required
+               style="padding:8px;width:100%"><br><br>
 
         Descriere:<br>
-        <textarea name="description" style="padding:8px;width:100%;height:90px"></textarea><br><br>
+        <textarea name="description"
+                  style="padding:8px;width:100%;height:90px"></textarea><br><br>
 
-        <button type="submit" style="background:#17a2b8;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
+        <button type="submit"
+                style="background:#17a2b8;color:white;border:none;
+                       padding:10px 14px;border-radius:8px;cursor:pointer">
           Trimite
         </button>
 
         <a href="/" style="margin-left:10px">
-          <button type="button" style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
+          <button type="button"
+                  style="background:#0066ff;color:white;border:none;
+                         padding:10px 14px;border-radius:8px;cursor:pointer">
             Back
           </button>
         </a>
