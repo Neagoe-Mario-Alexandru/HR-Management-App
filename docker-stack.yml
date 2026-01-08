@@ -94,7 +94,7 @@ services:
       EXPENSES_ROUTING_KEY: "expense.requested"
 
       # ✅ Stripe (pune cheia ta test)
-      STRIPE_SECRET_KEY: "sk_test_xxx"
+      STRIPE_SECRET_KEY: ""
 
     deploy:
       replicas: 1
@@ -104,7 +104,7 @@ services:
 
   expense-worker:
     build: .
-    image: auth-service:latest
+    image: expense-worker:latest
     networks:
       - backend
     depends_on:
@@ -130,7 +130,7 @@ services:
       NOTIFY_ROUTING_KEY: "notify.expense"
 
       # ✅ Stripe
-      STRIPE_SECRET_KEY: "sk_test_xxx"
+      STRIPE_SECRET_KEY: ""
 
     deploy:
       replicas: 1

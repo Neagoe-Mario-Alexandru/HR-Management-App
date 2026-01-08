@@ -7,4 +7,5 @@ Ce am facut pana acum:
 - concurenta la approve/reject rezolvata cu approve/reject atomic
 - anunt pe mail la request de leave, fie approve sau reject
 - sa vada deconturile/cererile sale de concediu angajatul
-- sistemul de deconturi
+- sistemul de deconturi, fara cheie de la Stripe, mock
+- notificare atunci cand un decont isi ia reject sau approve

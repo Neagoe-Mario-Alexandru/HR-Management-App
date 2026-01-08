@@ -7,13 +7,14 @@ from typing import Dict, Any, Optional
 import pika
 import stripe
 
-from app import app, db  # reuse same SQLAlchemy config
+from app import app, db
 from models import ExpenseClaim, ExpenseStatus
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("expense-worker")
 
-# RabbitMQ
+# ===================== RabbitMQ =====================
+
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
 
 EXPENSES_EXCHANGE = os.environ.get("EXPENSES_EXCHANGE", "expenses")
@@ -23,22 +24,41 @@ EXPENSES_BIND_KEY = os.environ.get("EXPENSES_BIND_KEY", "expense.requested")
 NOTIFY_EXCHANGE = os.environ.get("NOTIFY_EXCHANGE", "notifications")
 NOTIFY_ROUTING_KEY = os.environ.get("NOTIFY_ROUTING_KEY", "notify.expense")
 
-# Stripe
-STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
-stripe.api_key = STRIPE_SECRET_KEY
+# ===================== Stripe =====================
 
-# Worker tuning
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+USE_STRIPE_MOCK = not STRIPE_SECRET_KEY  # True dacă cheia nu există sau e goală
+
+if USE_STRIPE_MOCK:
+    logger.warning("⚠️ Stripe mock mode activated")
+    
+    class FakeStripePaymentIntent:
+        @staticmethod
+        def create(**kwargs):
+            logger.info(f"[MOCK] Stripe PaymentIntent.create called with {kwargs}")
+            return {"id": "pi_mocked", "status": "succeeded"}
+
+    class FakeStripe:
+        PaymentIntent = FakeStripePaymentIntent
+
+    stripe = FakeStripe()
+else:
+    import stripe
+    stripe.api_key = STRIPE_SECRET_KEY
+
+
+# ===================== Worker tuning =====================
+
 PREFETCH = int(os.environ.get("WORKER_PREFETCH", "10"))
 MAX_RETRIES = int(os.environ.get("WORKER_CONNECT_RETRIES", "30"))
 RETRY_SLEEP = float(os.environ.get("WORKER_CONNECT_RETRY_SLEEP", "2.0"))
 
-# Behavior
-# If false -> worker will ONLY process expenses that are APPROVED
-WORKER_AUTO_PROCESS = os.environ.get("WORKER_AUTO_PROCESS", "0") == "1"
+# ===================== Behavior =====================
 
-# If true -> when a not-approved expense is received, message is requeued
-# (be careful: can cause tight loops; default is False => ACK and ignore)
-REQUEUE_IF_NOT_APPROVED = os.environ.get("REQUEUE_IF_NOT_APPROVED", "0") == "1"
+WORKER_AUTO_PROCESS = os.environ.get("WORKER_AUTO_PROCESS", "0") == "1"
+REQUEUE_IF_NOT_APPROVED = False  # ❗ NU requeue business-state
+
+# ====================================================
 
 
 def _connect_with_retry() -> pika.BlockingConnection:
@@ -53,22 +73,17 @@ def _connect_with_retry() -> pika.BlockingConnection:
             return conn
         except Exception as e:
             last_err = e
-            logger.warning("RabbitMQ not ready (attempt %s/%s): %s", i, MAX_RETRIES, e)
+            logger.warning("RabbitMQ not ready (%s/%s): %s", i, MAX_RETRIES, e)
             time.sleep(RETRY_SLEEP)
-    raise RuntimeError(f"Could not connect to RabbitMQ after {MAX_RETRIES} retries: {last_err}")
+    raise RuntimeError(f"RabbitMQ connection failed: {last_err}")
 
 
-def _publish(
-    ch: pika.adapters.blocking_connection.BlockingChannel,
-    exchange: str,
-    routing_key: str,
-    payload: Dict[str, Any],
-) -> None:
+def _publish(ch, exchange: str, routing_key: str, payload: Dict[str, Any]) -> None:
     ch.exchange_declare(exchange=exchange, exchange_type="topic", durable=True)
     ch.basic_publish(
         exchange=exchange,
         routing_key=routing_key,
-        body=json.dumps(payload).encode("utf-8"),
+        body=json.dumps(payload).encode(),
         properties=pika.BasicProperties(
             delivery_mode=2,
             content_type="application/json",
@@ -84,49 +99,57 @@ def _mark_failed(exp: ExpenseClaim, reason: str) -> None:
 
 def _should_process_now(exp: ExpenseClaim) -> bool:
     if WORKER_AUTO_PROCESS:
-        return exp.status not in (ExpenseStatus.PAID, ExpenseStatus.FAILED, ExpenseStatus.CANCELED)
-
-    # ✅ procesează doar după ce Admin a aprobat și a pus QUEUED
+        return exp.status not in (
+            ExpenseStatus.PAID,
+            ExpenseStatus.FAILED,
+            ExpenseStatus.CANCELED,
+            ExpenseStatus.PROCESSING,
+        )
     return exp.status == ExpenseStatus.QUEUED
 
+
+# ====================================================
 
 
 def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -> None:
     """
-    Business logic. Must be idempotent.
+    Business logic. Idempotent & safe.
     """
     with app.app_context():
         exp = ExpenseClaim.query.get(expense_id)
         if not exp:
-            logger.warning("Expense not found: id=%s", expense_id)
+            logger.warning("Expense not found: %s", expense_id)
             return
 
-        finalized = {ExpenseStatus.PAID, ExpenseStatus.FAILED, ExpenseStatus.CANCELED}
-        # If you added REJECTED in models, include it safely:
+        finalized = {
+            ExpenseStatus.PAID,
+            ExpenseStatus.FAILED,
+            ExpenseStatus.CANCELED,
+            ExpenseStatus.PROCESSING,  # ❗ prevents double processing
+        }
+
         rejected = getattr(ExpenseStatus, "REJECTED", None)
-        if rejected is not None:
+        if rejected:
             finalized.add(rejected)
 
-        # idempotency: if already finalized, ignore
         if exp.status in finalized:
-            logger.info("Expense already finalized: id=%s status=%s", exp.id, exp.status.value)
+            logger.info("Expense already handled: id=%s status=%s", exp.id, exp.status.value)
             return
 
-        # ✅ Gate: don't process until APPROVED (unless WORKER_AUTO_PROCESS=1)
         if not _should_process_now(exp):
-            logger.info("Expense not eligible for processing yet: id=%s status=%s", exp.id, exp.status.value)
+            logger.info("Expense not eligible: id=%s status=%s", exp.id, exp.status.value)
             return
 
-        # transition to PROCESSING
+        # ===================== PROCESSING =====================
         exp.status = ExpenseStatus.PROCESSING
         db.session.commit()
 
         try:
-            # DEMO Stripe logic:
-            # - If no STRIPE_SECRET_KEY set -> mock success
+            # ===================== MOCK MODE =====================
             if not STRIPE_SECRET_KEY:
-                logger.warning("STRIPE_SECRET_KEY not set -> mock PAID for expense_id=%s", exp.id)
-                time.sleep(0.5)  # simulate work
+                logger.warning("Stripe disabled → mock PAID (expense_id=%s)", exp.id)
+                time.sleep(0.3)
+
                 exp.status = ExpenseStatus.PAID
                 db.session.commit()
 
@@ -140,26 +163,30 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
                         "user_id": exp.user_id,
                         "amount_cents": exp.amount_cents,
                         "currency": exp.currency,
-                        "message": "Decont procesat (mock, fara Stripe).",
+                        "message": "Decont procesat (mock).",
                         "trace_id": trace_id,
                     },
                 )
                 return
 
-            # NOTE: PaymentIntent is for charging a customer; reimbursements usually mean Stripe Connect + Transfers/Payouts.
-            # For demo we create a PI. In real life, you'd handle webhooks and only mark paid on succeeded.
+            # ===================== STRIPE (SYNC MVP) =====================
             pi = stripe.PaymentIntent.create(
                 amount=exp.amount_cents,
                 currency=exp.currency,
-                description=exp.description or f"Expense reimbursement #{exp.id}",
+                description=exp.description or f"Expense #{exp.id}",
+                confirm=True,
+                off_session=True,
                 metadata={
                     "expense_id": str(exp.id),
                     "user_id": exp.user_id,
                     "trace_id": trace_id or "",
                 },
             )
-            exp.stripe_payment_intent_id = pi["id"]
 
+            if pi.status != "succeeded":
+                raise RuntimeError(f"Stripe PI status={pi.status}")
+
+            exp.stripe_payment_intent_id = pi.id
             exp.status = ExpenseStatus.PAID
             db.session.commit()
 
@@ -173,8 +200,7 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
                     "user_id": exp.user_id,
                     "amount_cents": exp.amount_cents,
                     "currency": exp.currency,
-                    "message": "Decont procesat (demo Stripe).",
-                    "stripe_payment_intent_id": exp.stripe_payment_intent_id,
+                    "stripe_payment_intent_id": pi.id,
                     "trace_id": trace_id,
                 },
             )
@@ -182,7 +208,7 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
             logger.info("Expense PAID: id=%s", exp.id)
 
         except Exception as e:
-            logger.exception("Expense processing failed: id=%s err=%s", exp.id, e)
+            logger.exception("Expense FAILED: id=%s err=%s", exp.id, e)
             _mark_failed(exp, str(e))
 
             try:
@@ -196,19 +222,21 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
                         "user_id": exp.user_id,
                         "amount_cents": exp.amount_cents,
                         "currency": exp.currency,
-                        "message": f"Decont esuat: {e}",
+                        "message": str(e),
                         "trace_id": trace_id,
                     },
                 )
             except Exception:
-                logger.exception("Failed to publish failure notification for expense_id=%s", exp.id)
+                logger.exception("Failed to publish failure event")
+
+
+# ====================================================
 
 
 def main() -> None:
     conn = _connect_with_retry()
     ch = conn.channel()
 
-    # Ensure topology
     ch.exchange_declare(exchange=EXPENSES_EXCHANGE, exchange_type="topic", durable=True)
     ch.queue_declare(queue=EXPENSES_QUEUE, durable=True)
     ch.queue_bind(queue=EXPENSES_QUEUE, exchange=EXPENSES_EXCHANGE, routing_key=EXPENSES_BIND_KEY)
@@ -216,57 +244,26 @@ def main() -> None:
     ch.exchange_declare(exchange=NOTIFY_EXCHANGE, exchange_type="topic", durable=True)
     ch.basic_qos(prefetch_count=PREFETCH)
 
-    logger.info(
-        "Worker started. exchange=%s queue=%s bind=%s notify_exchange=%s auto_process=%s",
-        EXPENSES_EXCHANGE,
-        EXPENSES_QUEUE,
-        EXPENSES_BIND_KEY,
-        NOTIFY_EXCHANGE,
-        WORKER_AUTO_PROCESS,
-    )
+    logger.info("Expense worker started")
 
     def on_message(channel, method, properties, body: bytes):
         try:
-            msg = json.loads(body.decode("utf-8"))
+            msg = json.loads(body.decode())
             expense_id = int(msg["expense_id"])
             trace_id = msg.get("trace_id")
-        except Exception as e:
-            logger.error("Invalid message body -> nack (drop). err=%s body=%s", e, body)
-            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        except Exception:
+            channel.basic_nack(method.delivery_tag, requeue=False)
             return
 
         try:
-            # If not approved yet, we can either ACK (default) or requeue (optional).
-            with app.app_context():
-                exp = ExpenseClaim.query.get(expense_id)
-
-                if exp and not _should_process_now(exp):
-                    logger.info("Skip message: expense not ready. id=%s status=%s", exp.id, exp.status.value)
-                    if REQUEUE_IF_NOT_APPROVED:
-                        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-                    else:
-                        channel.basic_ack(delivery_tag=method.delivery_tag)
-                    return
-
-            _process_expense(expense_id=expense_id, trace_id=trace_id, notify_channel=channel)
-            channel.basic_ack(delivery_tag=method.delivery_tag)
-
-        except Exception as e:
-            # Unexpected crash -> requeue so it can be retried.
-            logger.exception("Unexpected worker error -> nack requeue. err=%s", e)
-            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-
-    ch.basic_consume(queue=EXPENSES_QUEUE, on_message_callback=on_message, auto_ack=False)
-
-    try:
-        ch.start_consuming()
-    except KeyboardInterrupt:
-        logger.info("Worker stopped by user")
-    finally:
-        try:
-            conn.close()
+            _process_expense(expense_id, trace_id, channel)
+            channel.basic_ack(method.delivery_tag)
         except Exception:
-            pass
+            logger.exception("Worker crash → requeue")
+            channel.basic_nack(method.delivery_tag, requeue=True)
+
+    ch.basic_consume(queue=EXPENSES_QUEUE, on_message_callback=on_message)
+    ch.start_consuming()
 
 
 if __name__ == "__main__":

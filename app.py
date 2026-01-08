@@ -41,7 +41,6 @@ RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/
 EXPENSES_EXCHANGE = os.environ.get("EXPENSES_EXCHANGE", "expenses")
 EXPENSES_ROUTING_KEY = os.environ.get("EXPENSES_ROUTING_KEY", "expense.requested")
 
-stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
 
 
 def rabbit_publish(exchange: str, routing_key: str, payload: dict):
@@ -217,6 +216,46 @@ Mulțumim,
 Sistem Concedii
 """
     return subject, body
+
+def build_expense_email(status: ExpenseStatus, exp: ExpenseClaim):
+    emp_username = username_for_sub(exp.user_id)
+
+    # Subject & headline depend de status (QUEUED ≠ PAID)
+    if status == ExpenseStatus.QUEUED:
+        subject = "Decontul tău a fost aprobat și este în curs de procesare"
+        status_label = "aprobat (în curs de procesare)"
+    elif status == ExpenseStatus.PAID:
+        subject = "Decontul tău a fost plătit"
+        status_label = "plătit"
+    elif status == ExpenseStatus.FAILED:
+        subject = "Decontul tău nu a putut fi procesat"
+        status_label = "eșuat"
+    elif getattr(ExpenseStatus, "REJECTED", None) == status:
+        subject = "Decontul tău a fost respins"
+        status_label = "respins"
+    else:
+        subject = f"Actualizare decont: {status.value}"
+        status_label = status.value.lower()
+
+    body = f"""Salut, {emp_username}
+
+Cererea ta de decont a fost {status_label}.
+
+Detalii:
+- Suma: {exp.amount_cents / 100:.2f} {(exp.currency or '').upper()}
+- Descriere: {exp.description or '-'}
+- Status curent: {status_label}
+- Data cererii: {exp.created_at.strftime('%Y-%m-%d')}
+
+Vei primi o nouă notificare dacă statusul se schimbă.
+
+Mulțumim,
+Sistem Deconturi
+"""
+
+    return subject, body
+
+
 
 
 def is_hr(userinfo):
@@ -467,6 +506,14 @@ def hr_reject_expense(expense_id):
     exp.failure_reason = "Rejected by HR"
     exp.approved_by = userinfo["sub"]
     db.session.commit()
+    emp_email = email_for_sub(exp.user_id)
+    subject, body = build_expense_email(ExpenseStatus.REJECTED, exp)
+
+    try:
+        send_email(emp_email, subject, body)
+    except Exception as e:
+        logger.error("Expense HR reject email failed: %s", e)
+
 
     return redirect(url_for("view_hr_expenses"))
 
@@ -555,6 +602,13 @@ def admin_approve_expense(expense_id):
     exp.status = ExpenseStatus.QUEUED
     exp.approved_by = userinfo["sub"]  # optional, dar util
     db.session.commit()
+    emp_email = email_for_sub(exp.user_id)
+    subject, body = build_expense_email(ExpenseStatus.QUEUED, exp)
+
+    try:
+        send_email(emp_email, subject, body)
+    except Exception as e:
+        logger.error("Expense admin approve email failed: %s", e)
 
     # 2) abia după publish
     trace_id = str(uuid.uuid4())
@@ -593,6 +647,13 @@ def admin_reject_expense(expense_id):
     exp.status = ExpenseStatus.REJECTED
     exp.failure_reason = "Rejected by Administrator"
     db.session.commit()
+    emp_email = email_for_sub(exp.user_id)
+    subject, body = build_expense_email(ExpenseStatus.REJECTED, exp)
+
+    try:
+        send_email(emp_email, subject, body)
+    except Exception as e:
+        logger.error("Expense admin reject email failed: %s", e)
 
     return redirect(url_for("view_admin_expenses"))
 
