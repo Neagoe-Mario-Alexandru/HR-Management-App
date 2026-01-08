@@ -242,18 +242,18 @@ def build_expense_email(status: ExpenseStatus, exp: ExpenseClaim):
 Cererea ta de decont a fost {status_label}.
 
 Detalii:
-- Suma: {exp.amount_cents / 100:.2f} {(exp.currency or '').upper()}
+- Suma: {exp.amount:.2f} {(exp.currency or '').upper()}
 - Descriere: {exp.description or '-'}
 - Status curent: {status_label}
 - Data cererii: {exp.created_at.strftime('%Y-%m-%d')}
 
-Vei primi o nouă notificare dacă statusul se schimbă.
 
 Mulțumim,
 Sistem Deconturi
 """
 
     return subject, body
+
 
 
 
@@ -435,7 +435,7 @@ def view_hr_expenses():
         <tr>
           <td>{e.id}</td>
           <td>{employee_name}</td>
-          <td>{e.amount_cents}</td>
+          <td>{e.amount:.2f}</td>
           <td>{(e.currency or "").upper()}</td>
           <td>{(e.description or "").replace("<","&lt;").replace(">","&gt;")}</td>
           <td><strong>{e.status.value}</strong></td>
@@ -453,7 +453,7 @@ def view_hr_expenses():
         <tr style="background:#0066ff;color:white">
           <th align="left">ID</th>
           <th align="left">User</th>
-          <th align="left">Amount (cents)</th>
+          <th align="left">Amount</th>
           <th align="left">Currency</th>
           <th align="left">Description</th>
           <th align="left">Status</th>
@@ -468,6 +468,7 @@ def view_hr_expenses():
     </div>
     </body></html>
     """
+
 
 @app.route("/expenses/<int:expense_id>/hr/approve", methods=["POST"])
 def hr_approve_expense(expense_id):
@@ -546,11 +547,14 @@ def view_admin_expenses():
         </div>
         """
 
+        # Format amount as normal currency
+        amount_display = f"{e.amount:.2f}"
+
         rows += f"""
         <tr>
           <td>{e.id}</td>
           <td>{employee_name}</td>
-          <td>{e.amount_cents}</td>
+          <td>{amount_display}</td>
           <td>{(e.currency or "").upper()}</td>
           <td>{(e.description or "").replace("<","&lt;").replace(">","&gt;")}</td>
           <td><strong>{e.status.value}</strong></td>
@@ -568,7 +572,7 @@ def view_admin_expenses():
         <tr style="background:#0066ff;color:white">
           <th align="left">ID</th>
           <th align="left">User</th>
-          <th align="left">Amount (cents)</th>
+          <th align="left">Amount</th>
           <th align="left">Currency</th>
           <th align="left">Description</th>
           <th align="left">Status</th>
@@ -585,6 +589,7 @@ def view_admin_expenses():
     """
 
 
+
 @app.route("/expenses/<int:expense_id>/admin/approve", methods=["POST"])
 def admin_approve_expense(expense_id):
     if "access_token" not in session:
@@ -598,10 +603,11 @@ def admin_approve_expense(expense_id):
     if exp.status != ExpenseStatus.HR_APPROVED:
         return "Expense not ready for admin approval", 409
 
-    # 1) întâi marchezi în DB că e gata de procesare
+    # 1) marchezi în DB că e gata de procesare
     exp.status = ExpenseStatus.QUEUED
-    exp.approved_by = userinfo["sub"]  # optional, dar util
+    exp.approved_by = userinfo["sub"]  # opțional, dar util
     db.session.commit()
+
     emp_email = email_for_sub(exp.user_id)
     subject, body = build_expense_email(ExpenseStatus.QUEUED, exp)
 
@@ -610,13 +616,13 @@ def admin_approve_expense(expense_id):
     except Exception as e:
         logger.error("Expense admin approve email failed: %s", e)
 
-    # 2) abia după publish
+    # 2) publish către RabbitMQ cu amount numeric
     trace_id = str(uuid.uuid4())
     msg = {
         "event": "expense.requested",
         "expense_id": exp.id,
         "user_id": exp.user_id,
-        "amount_cents": exp.amount_cents,
+        "amount": float(exp.amount),  # <--- aici
         "currency": exp.currency,
         "description": exp.description,
         "requested_at": datetime.utcnow().isoformat() + "Z",
@@ -628,6 +634,7 @@ def admin_approve_expense(expense_id):
     rabbit_publish(EXPENSES_EXCHANGE, EXPENSES_ROUTING_KEY, msg)
 
     return redirect(url_for("view_admin_expenses"))
+
 
 
 
@@ -779,7 +786,7 @@ def leave_request():
     """
     
 
-# Expense Request - Angajat
+# Expense Request - Angajat (standard amounts, not cents)
 @app.route("/expenses/request", methods=["GET", "POST"])
 def expense_request():
     if "access_token" not in session:
@@ -790,38 +797,38 @@ def expense_request():
         return "Access denied", 403
 
     if request.method == "POST":
-        amount = request.form.get("amount_cents", "").strip()
+        amount_str = request.form.get("amount", "").strip()
         currency = (request.form.get("currency") or "ron").strip().lower()
         description = request.form.get("description")
 
         try:
-            amount_cents = int(amount)
-            if amount_cents <= 0:
+            amount = float(amount_str)
+            if amount <= 0:
                 return "Suma invalidă", 400
         except ValueError:
             return "Suma invalidă", 400
 
         exp = ExpenseClaim(
             user_id=userinfo["sub"],
-            amount_cents=amount_cents,
+            amount=amount,  # store standard float, not cents
             currency=currency,
             description=description,
-            status=ExpenseStatus.PENDING,  # rămâne pending până aprobă HR
+            status=ExpenseStatus.PENDING,
         )
         db.session.add(exp)
         db.session.commit()
 
         return redirect(url_for("my_expenses"))
 
-    # IMPORTANT: aici trebuie HTML REAL
+    # Form HTML
     return """
     <html><body style="font-family:Arial;background:#f4f6f8">
     <div style="background:white;width:480px;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
       <h2>Cerere de decont</h2>
 
       <form method="post">
-        Suma (în bani, ex 1234 = 12.34):<br>
-        <input type="number" name="amount_cents" min="1" required style="padding:8px;width:100%"><br><br>
+        Suma (ex: 123.45):<br>
+        <input type="number" name="amount" min="0.01" step="0.01" required style="padding:8px;width:100%"><br><br>
 
         Monedă:<br>
         <input type="text" name="currency" value="ron" required style="padding:8px;width:100%"><br><br>
@@ -844,6 +851,7 @@ def expense_request():
     """
 
 
+
 # Deconturi - Angajat
 @app.route("/expenses/my")
 def my_expenses():
@@ -861,10 +869,13 @@ def my_expenses():
 
     rows = ""
     for e in items:
+        # Format amount as standard currency
+        amount_display = f"{e.amount:.2f}"
+
         rows += f"""
         <tr>
           <td>{e.id}</td>
-          <td>{e.amount_cents}</td>
+          <td>{amount_display}</td>
           <td>{(e.currency or "").upper()}</td>
           <td>{(e.description or "").replace("<","&lt;").replace(">","&gt;")}</td>
           <td><strong>{e.status.value}</strong></td>
@@ -880,7 +891,7 @@ def my_expenses():
       <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse">
         <tr style="background:#0066ff;color:white">
           <th align="left">ID</th>
-          <th align="left">Amount (cents)</th>
+          <th align="left">Amount</th>
           <th align="left">Currency</th>
           <th align="left">Description</th>
           <th align="left">Status</th>
@@ -894,6 +905,7 @@ def my_expenses():
     </div>
     </body></html>
     """
+
 
 
 

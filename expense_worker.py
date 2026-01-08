@@ -161,7 +161,7 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
                         "event": "expense.paid",
                         "expense_id": exp.id,
                         "user_id": exp.user_id,
-                        "amount_cents": exp.amount_cents,
+                        "amount_cents": int(exp.amount * 100),
                         "currency": exp.currency,
                         "message": "Decont procesat (mock).",
                         "trace_id": trace_id,
@@ -171,7 +171,7 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
 
             # ===================== STRIPE (SYNC MVP) =====================
             pi = stripe.PaymentIntent.create(
-                amount=exp.amount_cents,
+                amount=int(exp.amount * 100),
                 currency=exp.currency,
                 description=exp.description or f"Expense #{exp.id}",
                 confirm=True,
@@ -198,7 +198,7 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
                     "event": "expense.paid",
                     "expense_id": exp.id,
                     "user_id": exp.user_id,
-                    "amount_cents": exp.amount_cents,
+                    "amount_cents": int(exp.amount * 100),
                     "currency": exp.currency,
                     "stripe_payment_intent_id": pi.id,
                     "trace_id": trace_id,
@@ -220,7 +220,7 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
                         "event": "expense.failed",
                         "expense_id": exp.id,
                         "user_id": exp.user_id,
-                        "amount_cents": exp.amount_cents,
+                        "amount_cents": int(exp.amount * 100),
                         "currency": exp.currency,
                         "message": str(e),
                         "trace_id": trace_id,

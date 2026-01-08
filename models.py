@@ -3,7 +3,9 @@ from datetime import datetime
 from enum import Enum as PyEnum
 
 
-
+# ==========================
+# Users
+# ==========================
 class UserProfile(db.Model):
     __tablename__ = "users"
 
@@ -15,6 +17,9 @@ class UserProfile(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
+# ==========================
+# Leave requests
+# ==========================
 class LeaveStatus(PyEnum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
@@ -59,7 +64,6 @@ class LeaveRequest(db.Model):
 # ==========================
 # Expense reimbursement (Deconturi)
 # ==========================
-
 class ExpenseStatus(PyEnum):
     PENDING = "PENDING"
     HR_APPROVED = "HR_APPROVED"
@@ -74,8 +78,7 @@ class ExpenseStatus(PyEnum):
 class ExpenseClaim(db.Model):
     """
     Cerere de decont (expense reimbursement).
-    Observatie: Stripe are mai multe abordari.
-    Minim: salvezi un PaymentIntent id sau un Transfer/Payout id (in functie de flow-ul tau).
+    Amount stored as standard float (RON or other currency) instead of cents.
     """
     __tablename__ = "expense_claims"
 
@@ -84,9 +87,9 @@ class ExpenseClaim(db.Model):
     # Keycloak sub (angajat)
     user_id = db.Column(db.String(255), nullable=False, index=True)
 
-    # bani
-    amount_cents = db.Column(db.Integer, nullable=False)
-    currency = db.Column(db.String(10), nullable=False, default="ron")
+    # bani (standard float)
+    amount = db.Column(db.Float, nullable=False)  # changed from amount_cents
+    currency = db.Column(db.String(10), nullable=False, default="RON")
 
     description = db.Column(db.Text, nullable=True)
 
@@ -98,14 +101,14 @@ class ExpenseClaim(db.Model):
         index=True
     )
 
-    # Stripe fields (optional, depinde de implementare)
+    # Stripe fields (optional)
     stripe_payment_intent_id = db.Column(db.String(255), nullable=True)
     stripe_charge_id = db.Column(db.String(255), nullable=True)
 
     # pentru erori
     failure_reason = db.Column(db.Text, nullable=True)
 
-    # optional: cine a aprobat decontul (daca ai un flow de aprobare)
+    # optional: cine a aprobat decontul
     approved_by = db.Column(db.String(255), nullable=True)
 
     # timestamps
@@ -116,7 +119,7 @@ class ExpenseClaim(db.Model):
         return {
             "id": self.id,
             "user_id": self.user_id,
-            "amount_cents": self.amount_cents,
+            "amount": self.amount,
             "currency": self.currency,
             "description": self.description,
             "status": self.status.value,
