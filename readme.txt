@@ -9,3 +9,10 @@ Ce am facut pana acum:
 - sa vada deconturile/cererile sale de concediu angajatul
 - sistemul de deconturi, fara cheie de la Stripe, mock
 - notificare atunci cand un decont isi ia reject sau approve
+- rate limiting cu redis pe deconturi (maxim 5 pe zi, se reseteaza la miezul noptii)
+
+
+De facut:
+- implementat administrare prin Keycloak API
+- de revazut in baza de date cum sunt stocati angajatii, vreau sa le stochez toate datele
+sau restul de date sa mi le trag din Keycloak 
