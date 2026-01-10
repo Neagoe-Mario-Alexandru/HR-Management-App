@@ -97,7 +97,7 @@ services:
       KEYCLOAK_URL: "http://keycloak:8080"
       KEYCLOAK_REALM: "proiect-scd"
       KEYCLOAK_CLIENT_ID: "backend-scd"
-      KEYCLOAK_SECRET: "U5oQeJxCCOl0Ta7soM6Gmd7V9RR3y8Rs"
+      KEYCLOAK_SECRET: "qS674CbT2u25hS6q96V2v459GRKToc8D"
 
 
       SMTP_HOST: "smtp.gmail.com"

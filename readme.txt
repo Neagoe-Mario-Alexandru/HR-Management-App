@@ -10,6 +10,7 @@ Ce am facut pana acum:
 - sistemul de deconturi, fara cheie de la Stripe, mock
 - notificare atunci cand un decont isi ia reject sau approve
 - rate limiting cu redis pe deconturi (maxim 5 pe zi, se reseteaza la miezul noptii)
+- adminul poate sa acorde alte roluri oamenilor
 
 
 De facut:

@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, redirect, session, url_for
-from keycloak import KeycloakOpenID
+from keycloak import KeycloakOpenID, KeycloakAdmin
 from models import db, UserProfile, LeaveRequest, LeaveStatus, ExpenseClaim, ExpenseStatus
 from datetime import datetime, timedelta
 import os
@@ -143,6 +143,7 @@ with app.app_context():
 # Keycloak configuration
 KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "proiect-scd")
 KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "backend-scd")
+KEYCLOAK_CLIENT_SECRET = os.environ.get("KEYCLOAK_SECRET", "")
 
 if IN_DOCKER:
     KEYCLOAK_INTERNAL = "http://keycloak:8080"
@@ -154,12 +155,47 @@ else:
     REDIRECT_URI = "http://127.0.0.1:5002/callback"
 
 
+
 def get_keycloak():
     return KeycloakOpenID(
-        server_url=KEYCLOAK_INTERNAL,
-        client_id=KEYCLOAK_CLIENT_ID,
-        realm_name=KEYCLOAK_REALM,
+        server_url=os.environ.get("KEYCLOAK_URL", "http://keycloak:8080"),
+        client_id=os.environ.get("KEYCLOAK_CLIENT_ID", "backend-scd"),
+        realm_name=os.environ.get("KEYCLOAK_REALM", "proiect-scd"),
+        client_secret_key=os.environ.get("KEYCLOAK_SECRET", "")
     )
+    
+def get_admin_client():
+    return KeycloakAdmin(
+        server_url=os.environ.get("KEYCLOAK_URL", "http://keycloak:8080") + "/",
+        client_id=os.environ.get("KEYCLOAK_CLIENT_ID", "backend-scd"),
+        realm_name=os.environ.get("KEYCLOAK_REALM", "proiect-scd"),
+        client_secret_key=os.environ.get("KEYCLOAK_SECRET", ""),
+        user_realm_name=os.environ.get("KEYCLOAK_REALM", "proiect-scd"),
+        verify=True
+    )
+    
+VISIBLE_ROLES = ["Angajat", "HR", "Administrator"]
+    
+def update_keycloak_user_roles(user_id, roles_list):
+    try:
+        admin_kc = get_admin_client()
+        all_realm_roles = admin_kc.get_realm_roles()
+        
+        roles_to_assign = [r for r in all_realm_roles if r['name'] in roles_list]
+        roles_to_remove = [r for r in all_realm_roles if r['name'] in VISIBLE_ROLES and r['name'] not in roles_list]
+
+        # REPARAT: Folosim delete_realm_roles_from_user
+        if roles_to_remove:
+            admin_kc.delete_realm_roles_of_user(user_id=user_id, roles=roles_to_remove)
+            logger.info(f"Roluri eliminate pentru {user_id}: {[r['name'] for r in roles_to_remove]}")
+
+        if roles_to_assign:
+            admin_kc.assign_realm_roles(user_id=user_id, roles=roles_to_assign)
+            logger.info(f"Roluri adăugate pentru {user_id}: {[r['name'] for r in roles_to_assign]}")
+
+    except Exception as e:
+        logger.error(f"Eroare în update_keycloak_user_roles: {str(e)}")
+        raise e
 
 
 def decode_token(token):
@@ -546,6 +582,53 @@ def hr_reject_expense(expense_id):
 
 
     return redirect(url_for("view_hr_expenses"))
+
+@app.route("/admin/update-roles/<user_id>", methods=["POST"])
+def admin_update_roles(user_id):
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+    
+    try:
+        # 1. Inițializăm clientul de Admin
+        admin_kc = KeycloakAdmin(
+            server_url=os.environ.get("KEYCLOAK_URL", "http://keycloak:8080") + "/",
+            client_id=os.environ.get("KEYCLOAK_CLIENT_ID", "backend-scd"),
+            realm_name=os.environ.get("KEYCLOAK_REALM", "proiect-scd"),
+            client_secret_key=os.environ.get("KEYCLOAK_SECRET", ""),
+            user_realm_name=os.environ.get("KEYCLOAK_REALM", "proiect-scd"),
+            verify=True
+        )
+
+        # 2. Luăm lista actuală de roluri din Keycloak pentru a găsi obiectele de rol
+        all_realm_roles = admin_kc.get_realm_roles()
+        
+        # 3. Luăm rolurile selectate de utilizator din formular (checkbox-uri)
+        new_roles_names = request.form.getlist("roles")
+        
+        # Identificăm obiectele complete de rol (necesare pentru API)
+        to_add = [r for r in all_realm_roles if r['name'] in new_roles_names]
+        to_rem = [r for r in all_realm_roles if r['name'] in VISIBLE_ROLES and r['name'] not in new_roles_names]
+
+        # 4. Executăm modificările folosind metodele CORECTE
+        if to_rem:
+            # Metoda corectă este remove_realm_roles_from_user (cu 'remove' nu 'delete')
+            admin_kc.delete_realm_roles_of_user(user_id=user_id, roles=to_rem)
+            
+        if to_add:
+            # Metoda pentru adăugare este assign_realm_roles
+            admin_kc.assign_realm_roles(user_id=user_id, roles=to_add)
+
+        # 5. Sincronizăm baza de date locală (Postgres)
+        u = UserProfile.query.filter_by(keycloak_id=user_id).first()
+        if u:
+            u.role = ",".join(new_roles_names)
+            db.session.commit()
+            
+        return redirect(url_for("list_users"))
+
+    except Exception as e:
+        logger.error(f"EROARE ADMIN: {str(e)}")
+        return f"Eroare la procesare: {str(e)}", 500
 
 
 @app.route("/expenses/admin")
@@ -1056,46 +1139,82 @@ def list_users():
         return redirect(url_for("home"))
 
     userinfo = decode_token(session["access_token"])
-    if not can_manage_leaves(userinfo):
-        return "Access denied", 403
+    
+    # Verificăm dacă este HR sau Admin pentru a vedea lista
+    user_is_admin = is_admin(userinfo)
+    user_is_hr = is_hr(userinfo)
+    
+    if not (user_is_admin or user_is_hr):
+        return "Access denied. Trebuie să fii HR sau Admin.", 403
 
     users = UserProfile.query.order_by(UserProfile.username.asc()).all()
 
+    # Definim rolurile pe care Adminul le poate bifa
+    VISIBLE_ROLES = ["Angajat", "HR", "Administrator"]
+
     rows = ""
     for u in users:
-        roles = set((u.role or "").split(","))
-
-        # "useri normali" = au Angajat, dar NU au HR/Administrator
-        if "Angajat" not in roles:
-            continue
-        if "HR" in roles or "Administrator" in roles:
-            continue
+        current_roles = (u.role or "").split(",")
+        
+        # Generăm celula de acțiuni (doar pentru Admin)
+        management_cell = ""
+        if user_is_admin:
+            checkboxes = ""
+            for r in VISIBLE_ROLES:
+                checked = "checked" if r in current_roles else ""
+                checkboxes += f"""
+                    <label style="margin-right:10px; font-size: 0.9em;">
+                        <input type="checkbox" name="roles" value="{r}" {checked}> {r}
+                    </label>
+                """
+            
+            management_cell = f"""
+            <td style="border-bottom:1px solid #eee">
+                <form method="POST" action="/admin/update-roles/{u.keycloak_id}" style="margin:0; display:flex; align-items:center">
+                    <div style="flex-grow:1">{checkboxes}</div>
+                    <button type="submit" style="background:#28a745;color:white;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8em">Save</button>
+                </form>
+            </td>
+            """
+        else:
+            # Dacă e HR, nu vede coloana de management
+            management_cell = ""
 
         rows += f"""
         <tr>
-            <td>{(u.username or "").replace("<","&lt;").replace(">","&gt;")}</td>
-            <td>{(u.email or "").replace("<","&lt;").replace(">","&gt;")}</td>
-            <td>{(u.role or "").replace("<","&lt;").replace(">","&gt;")}</td>
+            <td style="border-bottom:1px solid #eee">{(u.username or "").replace("<","&lt;")}</td>
+            <td style="border-bottom:1px solid #eee">{(u.email or "").replace("<","&lt;")}</td>
+            <td style="border-bottom:1px solid #eee">{(u.role or "")}</td>
+            {management_cell}
         </tr>
         """
+
+    # Antetul tabelului se schimbă în funcție de cine privește
+    actions_header = '<th align="left">Management Roluri (Admin Only)</th>' if user_is_admin else ""
 
     return f"""
     <html>
     <body style="font-family:Arial;background:#f4f6f8">
-    <div style="background:white;width:900px;max-width:95vw;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
-        <h2>Profile angajați</h2>
+    <div style="background:white;width:1100px;max-width:95vw;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px">
+            <h2 style="margin:0">Management Utilizatori</h2>
+            <span style="background:#eee; padding:5px 10px; border-radius:5px; font-size:0.9em">
+                Logat ca: <b>{"Admin" if user_is_admin else "HR"}</b>
+            </span>
+        </div>
 
-        <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse">
+        <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse:collapse">
             <tr style="background:#0066ff;color:white">
                 <th align="left">Username</th>
                 <th align="left">Email</th>
-                <th align="left">Roluri</th>
+                <th align="left">Roluri Curente</th>
+                {actions_header}
             </tr>
-            {rows if rows else "<tr><td colspan='3' style='padding:14px'>Nu există angajați.</td></tr>"}
+            {rows if rows else "<tr><td colspan='4'>Nu există utilizatori în baza de date.</td></tr>"}
         </table>
 
         <br>
-        <a href="/"><button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Back</button></a>
+        <a href="/"><button style="background:#6c757d;color:white;border:none;padding:10px 18px;border-radius:8px;cursor:pointer">Inapoi la Dashboard</button></a>
     </div>
     </body>
     </html>
