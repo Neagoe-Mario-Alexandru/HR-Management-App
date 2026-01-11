@@ -13,6 +13,10 @@ class UserProfile(db.Model):
     keycloak_id = db.Column(db.String(255), unique=True, nullable=False)
     username = db.Column(db.String(100), nullable=True)
     email = db.Column(db.String(255), nullable=True)
+    # --- ADĂUGA ACESTE DOUĂ COLOANE ---
+    first_name = db.Column(db.String(100), nullable=True)
+    last_name = db.Column(db.String(100), nullable=True)
+    # ----------------------------------
     role = db.Column(db.String(50), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
