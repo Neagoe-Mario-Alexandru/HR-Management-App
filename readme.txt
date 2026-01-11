@@ -11,9 +11,5 @@ Ce am facut pana acum:
 - notificare atunci cand un decont isi ia reject sau approve
 - rate limiting cu redis pe deconturi (maxim 5 pe zi, se reseteaza la miezul noptii)
 - adminul poate sa acorde alte roluri oamenilor
-
-
-De facut:
-- implementat administrare prin Keycloak API
-- de revazut in baza de date cum sunt stocati angajatii, vreau sa le stochez toate datele
-sau restul de date sa mi le trag din Keycloak 
+- adminul poate sa creeze/stearga useri
+- acum toate detaliile despre useri apar in user list
