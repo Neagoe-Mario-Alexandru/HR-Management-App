@@ -1132,6 +1132,103 @@ def view_all_leaves():
     </html>
     """
     
+@app.route("/admin/create-user", methods=["POST"])
+def admin_create_user():
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+    
+    userinfo = decode_token(session["access_token"])
+    if not is_admin(userinfo):
+        return "Access denied", 403
+
+    # Date din formular
+    username = request.form.get("username")
+    email = request.form.get("email")
+    first_name = request.form.get("first_name")
+    last_name = request.form.get("last_name")
+    password = request.form.get("password")
+
+    try:
+        admin_kc = get_admin_client()
+        
+        # 1. Creare în Keycloak
+        new_user_payload = {
+            "username": username,
+            "email": email,
+            "firstName": first_name,
+            "lastName": last_name,
+            "enabled": True,
+            "emailVerified": True,
+            "credentials": [{
+                "value": password,
+                "type": "password",
+                "temporary": False
+            }]
+        }
+        
+        # Keycloak returnează ID-ul userului la creare
+        new_user_id = admin_kc.create_user(new_user_payload)
+        
+        # 2. Adăugare în Baza de Date Locală (Postgres)
+        # Initial fara roluri specifice, doar datele de baza
+        new_db_user = UserProfile(
+            keycloak_id=new_user_id,
+            username=username,
+            email=email,
+            role="" 
+        )
+        db.session.add(new_db_user)
+        db.session.commit()
+
+        logger.info(f"User creat cu succes: {username} ({new_user_id})")
+        return redirect(url_for("list_users"))
+
+    except Exception as e:
+        logger.error(f"Eroare creare user: {e}")
+        return f"""
+        <html><body>
+            <h3 style="color:red">Eroare la crearea utilizatorului</h3>
+            <p>{str(e)}</p>
+            <a href="/users">Inapoi</a>
+        </body></html>
+        """, 500
+        
+        
+@app.route("/admin/delete-user/<user_id>", methods=["POST"])
+def admin_delete_user(user_id):
+    if "access_token" not in session:
+        return redirect(url_for("home"))
+    
+    userinfo = decode_token(session["access_token"])
+    if not is_admin(userinfo):
+        return "Access denied", 403
+
+    try:
+        admin_kc = get_admin_client()
+
+        # 1. Ștergere din Keycloak
+        try:
+            admin_kc.delete_user(user_id)
+        except Exception as k_err:
+            logger.warning(f"Userul {user_id} nu a fost găsit în Keycloak (poate era deja șters): {k_err}")
+
+        # 2. Ștergere din Baza de Date Locală
+        # Ștergem și cererile asociate dacă e nevoie, sau doar profilul
+        # Aici ștergem profilul. SQLAlchemy ar trebui să gestioneze cascadele dacă sunt setate, 
+        # altfel userul rămâne null la cereri vechi.
+        
+        user_db = UserProfile.query.filter_by(keycloak_id=user_id).first()
+        if user_db:
+            db.session.delete(user_db)
+            db.session.commit()
+            
+        logger.info(f"User șters: {user_id}")
+        return redirect(url_for("list_users"))
+
+    except Exception as e:
+        logger.error(f"Eroare ștergere user: {e}")
+        return f"Eroare la ștergere: {str(e)}", 500
+        
     
 @app.route("/users")
 def list_users():
@@ -1140,7 +1237,6 @@ def list_users():
 
     userinfo = decode_token(session["access_token"])
     
-    # Verificăm dacă este HR sau Admin pentru a vedea lista
     user_is_admin = is_admin(userinfo)
     user_is_hr = is_hr(userinfo)
     
@@ -1148,54 +1244,95 @@ def list_users():
         return "Access denied. Trebuie să fii HR sau Admin.", 403
 
     users = UserProfile.query.order_by(UserProfile.username.asc()).all()
-
-    # Definim rolurile pe care Adminul le poate bifa
     VISIBLE_ROLES = ["Angajat", "HR", "Administrator"]
+
+    # --- SECTIUNEA CREARE USER (Doar Admin) ---
+    create_user_form = ""
+    if user_is_admin:
+        create_user_form = """
+        <div style="background:#e9ecef; padding:20px; border-radius:8px; margin-bottom:30px; border:1px solid #ced4da;">
+            <h3 style="margin-top:0">➕ Adaugă Utilizator Nou (Keycloak & DB)</h3>
+            <form method="POST" action="/admin/create-user" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+                <div>
+                    <label>Username:</label><br>
+                    <input type="text" name="username" required style="padding:6px; border-radius:4px; border:1px solid #ccc;">
+                </div>
+                <div>
+                    <label>Email:</label><br>
+                    <input type="email" name="email" required style="padding:6px; border-radius:4px; border:1px solid #ccc;">
+                </div>
+                <div>
+                    <label>Prenume:</label><br>
+                    <input type="text" name="first_name" required style="padding:6px; border-radius:4px; border:1px solid #ccc;">
+                </div>
+                <div>
+                    <label>Nume:</label><br>
+                    <input type="text" name="last_name" required style="padding:6px; border-radius:4px; border:1px solid #ccc;">
+                </div>
+                <div>
+                    <label>Parolă:</label><br>
+                    <input type="password" name="password" required style="padding:6px; border-radius:4px; border:1px solid #ccc;">
+                </div>
+                <button type="submit" style="background:#28a745; color:white; border:none; padding:8px 16px; border-radius:4px; cursor:pointer; font-weight:bold;">Creează User</button>
+            </form>
+        </div>
+        """
 
     rows = ""
     for u in users:
         current_roles = (u.role or "").split(",")
         
-        # Generăm celula de acțiuni (doar pentru Admin)
         management_cell = ""
+        delete_button = ""
+
         if user_is_admin:
+            # Checkbox-uri roluri
             checkboxes = ""
             for r in VISIBLE_ROLES:
                 checked = "checked" if r in current_roles else ""
                 checkboxes += f"""
-                    <label style="margin-right:10px; font-size: 0.9em;">
+                    <label style="margin-right:8px; font-size: 0.85em; cursor:pointer">
                         <input type="checkbox" name="roles" value="{r}" {checked}> {r}
                     </label>
                 """
             
             management_cell = f"""
             <td style="border-bottom:1px solid #eee">
-                <form method="POST" action="/admin/update-roles/{u.keycloak_id}" style="margin:0; display:flex; align-items:center">
+                <form method="POST" action="/admin/update-roles/{u.keycloak_id}" style="margin:0; display:flex; align-items:center; gap:10px">
                     <div style="flex-grow:1">{checkboxes}</div>
-                    <button type="submit" style="background:#28a745;color:white;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8em">Save</button>
+                    <button type="submit" style="background:#007bff; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:0.8em">Save Roles</button>
+                </form>
+            </td>
+            """
+            
+            # Buton Stergere
+            delete_button = f"""
+            <td style="border-bottom:1px solid #eee; text-align:center;">
+                <form method="POST" action="/admin/delete-user/{u.keycloak_id}" onsubmit="return confirm('Ești sigur că vrei să ștergi utilizatorul {u.username}?');" style="margin:0;">
+                    <button type="submit" style="background:#dc3545; color:white; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; font-size:0.8em">🗑️ Sterge</button>
                 </form>
             </td>
             """
         else:
-            # Dacă e HR, nu vede coloana de management
             management_cell = ""
+            delete_button = ""
 
         rows += f"""
         <tr>
             <td style="border-bottom:1px solid #eee">{(u.username or "").replace("<","&lt;")}</td>
             <td style="border-bottom:1px solid #eee">{(u.email or "").replace("<","&lt;")}</td>
-            <td style="border-bottom:1px solid #eee">{(u.role or "")}</td>
+            <td style="border-bottom:1px solid #eee"><small>{(u.role or "")}</small></td>
             {management_cell}
+            {delete_button}
         </tr>
         """
 
-    # Antetul tabelului se schimbă în funcție de cine privește
-    actions_header = '<th align="left">Management Roluri (Admin Only)</th>' if user_is_admin else ""
+    actions_header = '<th align="left">Management Roluri</th><th align="center" width="80">Acțiuni</th>' if user_is_admin else ""
 
     return f"""
     <html>
     <body style="font-family:Arial;background:#f4f6f8">
-    <div style="background:white;width:1100px;max-width:95vw;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
+    <div style="background:white;width:1200px;max-width:95vw;margin:40px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px">
             <h2 style="margin:0">Management Utilizatori</h2>
             <span style="background:#eee; padding:5px 10px; border-radius:5px; font-size:0.9em">
@@ -1203,18 +1340,20 @@ def list_users():
             </span>
         </div>
 
-        <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse:collapse">
-            <tr style="background:#0066ff;color:white">
+        {create_user_form}
+
+        <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse">
+            <tr style="background:#343a40;color:white">
                 <th align="left">Username</th>
                 <th align="left">Email</th>
-                <th align="left">Roluri Curente</th>
+                <th align="left">Roluri Curente (DB)</th>
                 {actions_header}
             </tr>
-            {rows if rows else "<tr><td colspan='4'>Nu există utilizatori în baza de date.</td></tr>"}
+            {rows if rows else "<tr><td colspan='5'>Nu există utilizatori în baza de date.</td></tr>"}
         </table>
 
         <br>
-        <a href="/"><button style="background:#6c757d;color:white;border:none;padding:10px 18px;border-radius:8px;cursor:pointer">Inapoi la Dashboard</button></a>
+        <a href="/"><button style="background:#6c757d;color:white;border:none;padding:10px 18px;border-radius:8px;cursor:pointer">Înapoi la Dashboard</button></a>
     </div>
     </body>
     </html>
@@ -1360,10 +1499,6 @@ def logout():
         f"?id_token_hint={id_token}"
         f"&post_logout_redirect_uri=http://localhost:{FLASK_PORT}"
     )
-
-
-
-
 
 # Main
 if __name__ == "__main__":
