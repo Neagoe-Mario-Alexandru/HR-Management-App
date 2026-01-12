@@ -13,8 +13,8 @@ from models import ExpenseClaim, ExpenseStatus
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("expense-worker")
 
-# ===================== RabbitMQ =====================
 
+# RabbitMQ
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
 
 EXPENSES_EXCHANGE = os.environ.get("EXPENSES_EXCHANGE", "expenses")
@@ -24,10 +24,10 @@ EXPENSES_BIND_KEY = os.environ.get("EXPENSES_BIND_KEY", "expense.requested")
 NOTIFY_EXCHANGE = os.environ.get("NOTIFY_EXCHANGE", "notifications")
 NOTIFY_ROUTING_KEY = os.environ.get("NOTIFY_ROUTING_KEY", "notify.expense")
 
-# ===================== Stripe =====================
 
+# Stripe
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
-USE_STRIPE_MOCK = not STRIPE_SECRET_KEY  # True dacă cheia nu există sau e goală
+USE_STRIPE_MOCK = not STRIPE_SECRET_KEY  # True daca cheia nu exista sau e goala
 
 if USE_STRIPE_MOCK:
     logger.warning("⚠️ Stripe mock mode activated")
@@ -47,20 +47,16 @@ else:
     stripe.api_key = STRIPE_SECRET_KEY
 
 
-# ===================== Worker tuning =====================
-
+# Worker tuning
 PREFETCH = int(os.environ.get("WORKER_PREFETCH", "10"))
 MAX_RETRIES = int(os.environ.get("WORKER_CONNECT_RETRIES", "30"))
 RETRY_SLEEP = float(os.environ.get("WORKER_CONNECT_RETRY_SLEEP", "2.0"))
 
-# ===================== Behavior =====================
-
+# Behavior
 WORKER_AUTO_PROCESS = os.environ.get("WORKER_AUTO_PROCESS", "0") == "1"
 REQUEUE_IF_NOT_APPROVED = False  # ❗ NU requeue business-state
 
-# ====================================================
-
-
+# Conectare la Rabbit
 def _connect_with_retry() -> pika.BlockingConnection:
     last_err: Optional[Exception] = None
     for i in range(1, MAX_RETRIES + 1):
@@ -77,7 +73,7 @@ def _connect_with_retry() -> pika.BlockingConnection:
             time.sleep(RETRY_SLEEP)
     raise RuntimeError(f"RabbitMQ connection failed: {last_err}")
 
-
+# Publicare mesaj
 def _publish(ch, exchange: str, routing_key: str, payload: Dict[str, Any]) -> None:
     ch.exchange_declare(exchange=exchange, exchange_type="topic", durable=True)
     ch.basic_publish(
@@ -90,13 +86,13 @@ def _publish(ch, exchange: str, routing_key: str, payload: Dict[str, Any]) -> No
         ),
     )
 
-
+# Daca da fail
 def _mark_failed(exp: ExpenseClaim, reason: str) -> None:
     exp.status = ExpenseStatus.FAILED
     exp.failure_reason = (reason or "")[:2000]
     db.session.commit()
 
-
+# Procesare eligibila
 def _should_process_now(exp: ExpenseClaim) -> bool:
     if WORKER_AUTO_PROCESS:
         return exp.status not in (
@@ -108,9 +104,7 @@ def _should_process_now(exp: ExpenseClaim) -> bool:
     return exp.status == ExpenseStatus.QUEUED
 
 
-# ====================================================
-
-
+# Procesarea decontului in sine
 def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -> None:
     """
     Business logic. Idempotent & safe.
@@ -125,7 +119,7 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
             ExpenseStatus.PAID,
             ExpenseStatus.FAILED,
             ExpenseStatus.CANCELED,
-            ExpenseStatus.PROCESSING,  # ❗ prevents double processing
+            ExpenseStatus.PROCESSING,
         }
 
         rejected = getattr(ExpenseStatus, "REJECTED", None)
@@ -140,12 +134,12 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
             logger.info("Expense not eligible: id=%s status=%s", exp.id, exp.status.value)
             return
 
-        # ===================== PROCESSING =====================
+        # Proceseaza
         exp.status = ExpenseStatus.PROCESSING
         db.session.commit()
 
         try:
-            # ===================== MOCK MODE =====================
+            # Mod mock, nu am luat cheia de la Stripe
             if not STRIPE_SECRET_KEY:
                 logger.warning("Stripe disabled → mock PAID (expense_id=%s)", exp.id)
                 time.sleep(0.3)
@@ -169,7 +163,7 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
                 )
                 return
 
-            # ===================== STRIPE (SYNC MVP) =====================
+            # Stripe real
             pi = stripe.PaymentIntent.create(
                 amount=int(exp.amount * 100),
                 currency=exp.currency,
@@ -230,7 +224,6 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
                 logger.exception("Failed to publish failure event")
 
 
-# ====================================================
 
 
 def main() -> None:

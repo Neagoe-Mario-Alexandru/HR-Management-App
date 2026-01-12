@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, redirect, session, url_for
+from flask import Flask, request, redirect, session, url_for
 from keycloak import KeycloakOpenID, KeycloakAdmin
 from models import db, UserProfile, LeaveRequest, LeaveStatus, ExpenseClaim, ExpenseStatus
 from datetime import datetime, timedelta
@@ -35,21 +35,19 @@ if SMTP_PASS_FILE and not SMTP_PASS:
     SMTP_PASS = read_secret_file(SMTP_PASS_FILE)
     
     
-# RabbitMQ configuration
-#RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+# RabbitMQ config
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
 EXPENSES_EXCHANGE = os.environ.get("EXPENSES_EXCHANGE", "expenses")
 EXPENSES_ROUTING_KEY = os.environ.get("EXPENSES_ROUTING_KEY", "expense.requested")
 
 
-#Redis
+#Redis config
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 
-#Rate limiting function
+#Rate limiting cu Redis
 MAX_EXPENSES_PER_DAY = 5
-
 def check_expense_rate_limit(user_id: str) -> bool:
     today = datetime.utcnow().strftime("%Y-%m-%d")
     key = f"expense_limit:{user_id}:{today}"
@@ -70,8 +68,7 @@ def check_expense_rate_limit(user_id: str) -> bool:
     return True
 
 
-
-
+# Publish pt RabbitMQ
 def rabbit_publish(exchange: str, routing_key: str, payload: dict):
     params = pika.URLParameters(RABBITMQ_URL)
     conn = pika.BlockingConnection(params)
@@ -83,7 +80,8 @@ def rabbit_publish(exchange: str, routing_key: str, payload: dict):
         routing_key=routing_key,
         body=json.dumps(payload).encode("utf-8"),
         properties=pika.BasicProperties(
-            delivery_mode=2,  # persistent
+            # delivery mode persistent
+            delivery_mode=2,
             content_type="application/json",
         ),
     )
@@ -93,14 +91,14 @@ def rabbit_publish(exchange: str, routing_key: str, payload: dict):
 
 
 
-# Environment detection
+# Check sa vad daca rulez in Docker
 IN_DOCKER = os.environ.get("IN_DOCKER", "0") == "1"
 
-# Flask app
+# Flask setup
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", "SUPER_SECRET_SESSION_KEY")
 
-# Roluri de business vizibile
+# Rolurile
 VISIBLE_ROLES = {"Angajat", "HR", "Administrator"}
 
 app.config.update(
@@ -110,7 +108,7 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
 )
 
-# Database configuration
+# Database (si pt cand testam local)
 if IN_DOCKER:
     DB_HOST = "profile-db"
     FLASK_PORT = 5001
@@ -155,7 +153,7 @@ else:
     REDIRECT_URI = "http://127.0.0.1:5002/callback"
 
 
-
+# Clienti Keycloak
 def get_keycloak():
     return KeycloakOpenID(
         server_url=os.environ.get("KEYCLOAK_URL", "http://keycloak:8080"),
@@ -173,9 +171,10 @@ def get_admin_client():
         user_realm_name=os.environ.get("KEYCLOAK_REALM", "proiect-scd"),
         verify=True
     )
+   
     
-VISIBLE_ROLES = ["Angajat", "HR", "Administrator"]
-    
+
+# Update de useri in Keycloak
 def update_keycloak_user_roles(user_id, roles_list):
     try:
         admin_kc = get_admin_client()
@@ -184,20 +183,21 @@ def update_keycloak_user_roles(user_id, roles_list):
         roles_to_assign = [r for r in all_realm_roles if r['name'] in roles_list]
         roles_to_remove = [r for r in all_realm_roles if r['name'] in VISIBLE_ROLES and r['name'] not in roles_list]
 
-        # REPARAT: Folosim delete_realm_roles_from_user
+        # Delete roles - admin
         if roles_to_remove:
             admin_kc.delete_realm_roles_of_user(user_id=user_id, roles=roles_to_remove)
             logger.info(f"Roluri eliminate pentru {user_id}: {[r['name'] for r in roles_to_remove]}")
-
+        # Give roles
         if roles_to_assign:
             admin_kc.assign_realm_roles(user_id=user_id, roles=roles_to_assign)
-            logger.info(f"Roluri adăugate pentru {user_id}: {[r['name'] for r in roles_to_assign]}")
-
+            logger.info(f"Roluri adaugate pentru {user_id}: {[r['name'] for r in roles_to_assign]}")
+    # Exceptie + debug
     except Exception as e:
-        logger.error(f"Eroare în update_keycloak_user_roles: {str(e)}")
+        logger.error(f"Eroare update_keycloak_user_roles: {str(e)}")
         raise e
 
 
+# Decode JWT token
 def decode_token(token):
     if not token:
         return {}
@@ -208,34 +208,37 @@ def decode_token(token):
         options={"verify_signature": False, "verify_aud": False},
     )
 
+# Checkuri pe roluri
 def can_manage_leaves(userinfo):
     return has_role(userinfo, "HR") or has_role(userinfo, "Administrator")
 
 def has_role(userinfo, role):
     return role in userinfo.get("realm_access", {}).get("roles", [])
 
-
+# Nu are sens sa afisez alte roluri in UI
 def visible_roles_from_token(userinfo):
     all_roles = userinfo.get("realm_access", {}).get("roles", [])
     return [r for r in all_roles if r in VISIBLE_ROLES]
 
 
+# Get username/email din sub
 def username_for_sub(sub):
     if not sub:
         return "-"
     u = UserProfile.query.filter_by(keycloak_id=sub).first()
     return u.username if u and u.username else sub
 
+# Pt trimis emailuri
 def send_email(to_email: str, subject: str, body: str):
     if not to_email:
-        logger.warning("No recipient email -> skip send")
+        logger.warning("Niciun destinatar la mail -> skip send")
         return
 
     if not SMTP_HOST:
         logger.warning("SMTP_HOST not set -> skip send")
         return
 
-    logger.info("Sending email via %s:%s to=%s from=%s subj=%s",
+    logger.info("Trimit mail prin %s:%s to=%s from=%s subj=%s",
                 SMTP_HOST, SMTP_PORT, to_email, SMTP_FROM, subject)
 
     msg = EmailMessage()
@@ -253,14 +256,15 @@ def send_email(to_email: str, subject: str, body: str):
 
     logger.info("Email sent OK to=%s", to_email)
 
-        
+
+# Get email din sub      
 def email_for_sub(sub):
     if not sub:
         return None
     u = UserProfile.query.filter_by(keycloak_id=sub).first()
     return u.email if u else None
 
-
+# Emailuri pt concedii
 def build_leave_email(status: LeaveStatus, leave: LeaveRequest):
     emp_username = username_for_sub(leave.user_id)
     approver = username_for_sub(leave.approved_by)
@@ -271,32 +275,35 @@ def build_leave_email(status: LeaveStatus, leave: LeaveRequest):
 Cererea ta de concediu a fost {status.value}.
 
 Detalii:
-- Perioadă: {leave.start_date} -> {leave.end_date}
+- Perioada: {leave.start_date} -> {leave.end_date}
 - Motiv: {leave.reason or "-"}
 - Status: {status.value}
-- Procesată de: {approver}
+- Procesata de: {approver}
 - Data cererii: {leave.created_at.strftime('%Y-%m-%d')}
 
-Mulțumim,
+Multumim,
 Sistem Concedii
 """
     return subject, body
 
+
+
+# Emailuri pt deconturi
 def build_expense_email(status: ExpenseStatus, exp: ExpenseClaim):
     emp_username = username_for_sub(exp.user_id)
 
     # Subject & headline depend de status (QUEUED ≠ PAID)
     if status == ExpenseStatus.QUEUED:
-        subject = "Decontul tău a fost aprobat și este în curs de procesare"
-        status_label = "aprobat (în curs de procesare)"
+        subject = "Decontul tau a fost aprobat si este in curs de procesare"
+        status_label = "aprobat (in curs de procesare)"
     elif status == ExpenseStatus.PAID:
-        subject = "Decontul tău a fost plătit"
-        status_label = "plătit"
+        subject = "Decontul tau a fost platit"
+        status_label = "platit"
     elif status == ExpenseStatus.FAILED:
-        subject = "Decontul tău nu a putut fi procesat"
-        status_label = "eșuat"
+        subject = "Decontul tau nu a putut fi procesat"
+        status_label = "esuat"
     elif getattr(ExpenseStatus, "REJECTED", None) == status:
-        subject = "Decontul tău a fost respins"
+        subject = "Decontul tau a fost respins"
         status_label = "respins"
     else:
         subject = f"Actualizare decont: {status.value}"
@@ -313,7 +320,7 @@ Detalii:
 - Data cererii: {exp.created_at.strftime('%Y-%m-%d')}
 
 
-Mulțumim,
+Multumim,
 Sistem Deconturi
 """
 
@@ -322,7 +329,7 @@ Sistem Deconturi
 
 
 
-
+# Check HR/Admin
 def is_hr(userinfo):
     return has_role(userinfo, "HR")
 
@@ -330,8 +337,7 @@ def is_admin(userinfo):
     return has_role(userinfo, "Administrator")
 
 
-# Home
-# Routes
+# Home / Butoane principale
 @app.route("/")
 def home():
     if "access_token" not in session:
@@ -357,14 +363,14 @@ def home():
         leave_button = """
             <a href="/leave/request">
                 <button style="background:#28a745;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
-                    Fă cerere de concediu
+                    Fa o cerere de concediu
                 </button>
             </a>
         """
         expense_button = """
             <a href="/expenses/request">
                 <button style="background:#17a2b8;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
-                    Fă cerere de decont
+                    Fa o cerere de decont
                 </button>
             </a>
         """
@@ -400,7 +406,7 @@ def home():
         profiles_button = """
             <a href="/users">
                 <button style="background:#9c27b0;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
-                    Vezi profile angajați
+                    Vezi profile angajati
                 </button>
             </a>
         """
@@ -423,7 +429,7 @@ def home():
         profiles_button = """
             <a href="/users">
                 <button style="background:#9c27b0;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">
-                    Vezi profile angajați
+                    Vezi profile angajati
                 </button>
             </a>
         """
@@ -525,7 +531,7 @@ def view_hr_expenses():
           <th align="left">Created</th>
           <th align="center">Actions</th>
         </tr>
-        {rows if rows else "<tr><td colspan='8' style='padding:14px'>Nu există cereri PENDING.</td></tr>"}
+        {rows if rows else "<tr><td colspan='8' style='padding:14px'>Nu exista cereri PENDING.</td></tr>"}
       </table>
 
       <br>
@@ -535,6 +541,7 @@ def view_hr_expenses():
     """
 
 
+# HR - Approve Decont
 @app.route("/expenses/<int:expense_id>/hr/approve", methods=["POST"])
 def hr_approve_expense(expense_id):
     if "access_token" not in session:
@@ -555,6 +562,7 @@ def hr_approve_expense(expense_id):
     return redirect(url_for("view_hr_expenses"))
 
 
+#HR - Reject Decont
 @app.route("/expenses/<int:expense_id>/hr/reject", methods=["POST"])
 def hr_reject_expense(expense_id):
     if "access_token" not in session:
@@ -578,18 +586,20 @@ def hr_reject_expense(expense_id):
     try:
         send_email(emp_email, subject, body)
     except Exception as e:
-        logger.error("Expense HR reject email failed: %s", e)
+        logger.error("Expense HR reject email fail: %s", e)
 
 
     return redirect(url_for("view_hr_expenses"))
 
+
+# Admin - Update Roluri
 @app.route("/admin/update-roles/<user_id>", methods=["POST"])
 def admin_update_roles(user_id):
     if "access_token" not in session:
         return redirect(url_for("home"))
     
     try:
-        # 1. Inițializăm clientul de Admin
+        # Initializez KeycloakAdmin
         admin_kc = KeycloakAdmin(
             server_url=os.environ.get("KEYCLOAK_URL", "http://keycloak:8080") + "/",
             client_id=os.environ.get("KEYCLOAK_CLIENT_ID", "backend-scd"),
@@ -599,26 +609,25 @@ def admin_update_roles(user_id):
             verify=True
         )
 
-        # 2. Luăm lista actuală de roluri din Keycloak pentru a găsi obiectele de rol
+        # Lista de roluri
         all_realm_roles = admin_kc.get_realm_roles()
         
-        # 3. Luăm rolurile selectate de utilizator din formular (checkbox-uri)
+        # Rolurile selectate in formular
         new_roles_names = request.form.getlist("roles")
         
-        # Identificăm obiectele complete de rol (necesare pentru API)
+        # Ce am de adaugat si ce de sters
         to_add = [r for r in all_realm_roles if r['name'] in new_roles_names]
         to_rem = [r for r in all_realm_roles if r['name'] in VISIBLE_ROLES and r['name'] not in new_roles_names]
 
-        # 4. Executăm modificările folosind metodele CORECTE
+        # Eliminare roluri
         if to_rem:
-            # Metoda corectă este remove_realm_roles_from_user (cu 'remove' nu 'delete')
             admin_kc.delete_realm_roles_of_user(user_id=user_id, roles=to_rem)
-            
+        
+        # Adaugare roluri
         if to_add:
-            # Metoda pentru adăugare este assign_realm_roles
             admin_kc.assign_realm_roles(user_id=user_id, roles=to_add)
 
-        # 5. Sincronizăm baza de date locală (Postgres)
+        # Sinconizare DB local
         u = UserProfile.query.filter_by(keycloak_id=user_id).first()
         if u:
             u.role = ",".join(new_roles_names)
@@ -631,6 +640,7 @@ def admin_update_roles(user_id):
         return f"Eroare la procesare: {str(e)}", 500
 
 
+# Admin - Vezi Deconturi
 @app.route("/expenses/admin")
 def view_admin_expenses():
     if "access_token" not in session:
@@ -659,7 +669,6 @@ def view_admin_expenses():
         </div>
         """
 
-        # Format amount as normal currency
         amount_display = f"{e.amount:.2f}"
 
         rows += f"""
@@ -691,7 +700,7 @@ def view_admin_expenses():
           <th align="left">Created</th>
           <th align="center">Actions</th>
         </tr>
-        {rows if rows else "<tr><td colspan='8' style='padding:14px'>Nu există cereri HR_APPROVED.</td></tr>"}
+        {rows if rows else "<tr><td colspan='8' style='padding:14px'>Nu exista cereri HR_APPROVED.</td></tr>"}
       </table>
 
       <br>
@@ -701,7 +710,7 @@ def view_admin_expenses():
     """
 
 
-
+# Admin - Approve la Decont
 @app.route("/expenses/<int:expense_id>/admin/approve", methods=["POST"])
 def admin_approve_expense(expense_id):
     if "access_token" not in session:
@@ -715,9 +724,9 @@ def admin_approve_expense(expense_id):
     if exp.status != ExpenseStatus.HR_APPROVED:
         return "Expense not ready for admin approval", 409
 
-    # 1) marchezi în DB că e gata de procesare
+    # Marcat in db gata de procesat
     exp.status = ExpenseStatus.QUEUED
-    exp.approved_by = userinfo["sub"]  # opțional, dar util
+    exp.approved_by = userinfo["sub"]
     db.session.commit()
 
     emp_email = email_for_sub(exp.user_id)
@@ -728,13 +737,13 @@ def admin_approve_expense(expense_id):
     except Exception as e:
         logger.error("Expense admin approve email failed: %s", e)
 
-    # 2) publish către RabbitMQ cu amount numeric
+    # Publish mesaj in Rabbit
     trace_id = str(uuid.uuid4())
     msg = {
         "event": "expense.requested",
         "expense_id": exp.id,
         "user_id": exp.user_id,
-        "amount": float(exp.amount),  # <--- aici
+        "amount": float(exp.amount),
         "currency": exp.currency,
         "description": exp.description,
         "requested_at": datetime.utcnow().isoformat() + "Z",
@@ -749,7 +758,7 @@ def admin_approve_expense(expense_id):
 
 
 
-
+# Admin - Reject Decont
 @app.route("/expenses/<int:expense_id>/admin/reject", methods=["POST"])
 def admin_reject_expense(expense_id):
     if "access_token" not in session:
@@ -764,7 +773,7 @@ def admin_reject_expense(expense_id):
         return "Expense not ready for admin decision", 409
 
     exp.status = ExpenseStatus.REJECTED
-    exp.failure_reason = "Rejected by Administrator"
+    exp.failure_reason = "Rejected by an Admin"
     db.session.commit()
     emp_email = email_for_sub(exp.user_id)
     subject, body = build_expense_email(ExpenseStatus.REJECTED, exp)
@@ -772,12 +781,12 @@ def admin_reject_expense(expense_id):
     try:
         send_email(emp_email, subject, body)
     except Exception as e:
-        logger.error("Expense admin reject email failed: %s", e)
+        logger.error("Expense admin reject email fail: %s", e)
 
     return redirect(url_for("view_admin_expenses"))
 
 
-
+# Angajat - Concedii lista
 @app.route("/leave/my")
 def my_leaves():
     if "access_token" not in session:
@@ -823,7 +832,7 @@ def my_leaves():
           <th align="left">Approved by</th>
           <th align="left">Created</th>
         </tr>
-        {rows if rows else "<tr><td colspan='7' style='padding:14px'>Nu există cereri de concediu.</td></tr>"}
+        {rows if rows else "<tr><td colspan='7' style='padding:14px'>Nu exista cereri de concediu.</td></tr>"}
       </table>
 
       <br>
@@ -833,8 +842,7 @@ def my_leaves():
     """
 
 
-
-
+# Toti - Vezi profilul utilizatorului
 @app.route("/profile")
 def profile():
     if "access_token" not in session:
@@ -887,8 +895,8 @@ def leave_request():
     <div style="background:white;width:480px;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
     <h2>Cerere concediu</h2>
     <form method="post">
-        Data început:<br><input type="date" name="start_date" required style="padding:8px;width:100%"><br><br>
-        Data sfârșit:<br><input type="date" name="end_date" required style="padding:8px;width:100%"><br><br>
+        Data inceput:<br><input type="date" name="start_date" required style="padding:8px;width:100%"><br><br>
+        Data sfarsit:<br><input type="date" name="end_date" required style="padding:8px;width:100%"><br><br>
         Motiv:<br><textarea name="reason" style="padding:8px;width:100%;height:90px"></textarea><br><br>
         <button type="submit" style="background:#28a745;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Trimite</button>
         <a href="/" style="margin-left:10px"><button type="button" style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Back</button></a>
@@ -898,7 +906,7 @@ def leave_request():
     """
     
 
-# Expense Request - Angajat (standard amounts, not cents)
+# Expense Request - Angajat
 @app.route("/expenses/request", methods=["GET", "POST"])
 def expense_request():
     if "access_token" not in session:
@@ -911,30 +919,26 @@ def expense_request():
     user_id = userinfo["sub"]
 
     if request.method == "POST":
-        # ===============================
-        # 🔒 RATE LIMIT: max 5 / zi / user
-        # ===============================
+        # MAXIM DE 5 ORI PE ZI DECONT, SA NU FIE ABUZIV
         if not check_expense_rate_limit(user_id):
             return """
             <html><body style="font-family:Arial;background:#f4f6f8">
             <div style="background:white;width:480px;margin:60px auto;padding:30px;
                         border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1);
                         text-align:center">
-              <h3 style="color:#cc0000">Limită depășită</h3>
+              <h3 style="color:#cc0000">Limita depasita</h3>
               <p>Ai atins limita de <strong>5 cereri de decont pe zi</strong>.</p>
-              <p>Încearcă din nou mâine.</p>
+              <p>Incearca din nou maine.</p>
               <br>
               <a href="/"><button style="background:#0066ff;color:white;border:none;
               padding:10px 14px;border-radius:8px;cursor:pointer">
-                Înapoi
+                Inapoi
               </button></a>
             </div>
             </body></html>
             """, 429
 
-        # ===============================
         # Date din formular
-        # ===============================
         amount_str = request.form.get("amount", "").strip()
         currency = (request.form.get("currency") or "ron").strip().lower()
         description = request.form.get("description")
@@ -942,16 +946,14 @@ def expense_request():
         try:
             amount = float(amount_str)
             if amount <= 0:
-                return "Suma invalidă", 400
+                return "Suma invalida", 400
         except ValueError:
-            return "Suma invalidă", 400
+            return "Suma invalida", 400
 
-        # ===============================
-        # Creează cererea de decont
-        # ===============================
+        # Creez cererea
         exp = ExpenseClaim(
             user_id=user_id,
-            amount=amount,  # float, nu cents
+            amount=amount,
             currency=currency,
             description=description,
             status=ExpenseStatus.PENDING,
@@ -961,10 +963,7 @@ def expense_request():
         db.session.commit()
 
         return redirect(url_for("my_expenses"))
-
-    # ===============================
-    # GET – formular HTML
-    # ===============================
+    
     return """
     <html><body style="font-family:Arial;background:#f4f6f8">
     <div style="background:white;width:480px;margin:60px auto;padding:30px;
@@ -976,7 +975,7 @@ def expense_request():
         <input type="number" name="amount" min="0.01" step="0.01" required
                style="padding:8px;width:100%"><br><br>
 
-        Monedă:<br>
+        Moneda:<br>
         <input type="text" name="currency" value="ron" required
                style="padding:8px;width:100%"><br><br>
 
@@ -1021,7 +1020,7 @@ def my_expenses():
 
     rows = ""
     for e in items:
-        # Format amount as standard currency
+        # Am avut probleme, standard currency nu in cents
         amount_display = f"{e.amount:.2f}"
 
         rows += f"""
@@ -1049,7 +1048,7 @@ def my_expenses():
           <th align="left">Status</th>
           <th align="left">Created</th>
         </tr>
-        {rows if rows else "<tr><td colspan='6' style='padding:14px'>Nu există deconturi.</td></tr>"}
+        {rows if rows else "<tr><td colspan='6' style='padding:14px'>Nu exista deconturi.</td></tr>"}
       </table>
 
       <br>
@@ -1131,7 +1130,8 @@ def view_all_leaves():
     </body>
     </html>
     """
-    
+
+# Admin - Creare User 
 @app.route("/admin/create-user", methods=["POST"])
 def admin_create_user():
     if "access_token" not in session:
@@ -1151,7 +1151,7 @@ def admin_create_user():
     try:
         admin_kc = get_admin_client()
         
-        # 1. Creare în Keycloak
+        # Creez in Keycloak
         new_user_payload = {
             "username": username,
             "email": email,
@@ -1166,11 +1166,10 @@ def admin_create_user():
             }]
         }
         
-        # Keycloak returnează ID-ul userului la creare
+        # Keycloak imi da inapoi id
         new_user_id = admin_kc.create_user(new_user_payload)
         
-        # 2. Adăugare în Baza de Date Locală (Postgres)
-        # Initial fara roluri specifice, doar datele de baza
+        # Il bag in db local
         new_db_user = UserProfile(
             keycloak_id=new_user_id,
             username=username,
@@ -1193,7 +1192,8 @@ def admin_create_user():
         </body></html>
         """, 500
         
-        
+
+# Admin - Stergere User  
 @app.route("/admin/delete-user/<user_id>", methods=["POST"])
 def admin_delete_user(user_id):
     if "access_token" not in session:
@@ -1206,30 +1206,27 @@ def admin_delete_user(user_id):
     try:
         admin_kc = get_admin_client()
 
-        # 1. Ștergere din Keycloak
+        # Sterg din keycloak
         try:
             admin_kc.delete_user(user_id)
         except Exception as k_err:
-            logger.warning(f"Userul {user_id} nu a fost găsit în Keycloak (poate era deja șters): {k_err}")
+            logger.warning(f"Userul {user_id} nu a fost gasit in Keycloak (poate era deja sters): {k_err}")
 
-        # 2. Ștergere din Baza de Date Locală
-        # Ștergem și cererile asociate dacă e nevoie, sau doar profilul
-        # Aici ștergem profilul. SQLAlchemy ar trebui să gestioneze cascadele dacă sunt setate, 
-        # altfel userul rămâne null la cereri vechi.
-        
+        # Sterg din db local
         user_db = UserProfile.query.filter_by(keycloak_id=user_id).first()
         if user_db:
             db.session.delete(user_db)
             db.session.commit()
             
-        logger.info(f"User șters: {user_id}")
+        logger.info(f"User sters: {user_id}")
         return redirect(url_for("list_users"))
 
     except Exception as e:
-        logger.error(f"Eroare ștergere user: {e}")
-        return f"Eroare la ștergere: {str(e)}", 500
+        logger.error(f"Eroare stergere user: {e}")
+        return f"Eroare la stergere: {str(e)}", 500
         
-    
+ 
+# Admin / HR - Lista Utilizatori   
 @app.route("/users")
 def list_users():
     if "access_token" not in session:
@@ -1241,18 +1238,18 @@ def list_users():
     user_is_hr = is_hr(userinfo)
     
     if not (user_is_admin or user_is_hr):
-        return "Access denied. Trebuie să fii HR sau Admin.", 403
+        return "Access denied. Trebuie sa fii HR sau Admin.", 403
 
-    # Luăm toți utilizatorii din DB
+    # Toti din db
     users = UserProfile.query.order_by(UserProfile.username.asc()).all()
     VISIBLE_ROLES = ["Angajat", "HR", "Administrator"]
 
-    # --- SECTIUNEA CREARE USER (Doar Admin) ---
+    # Doar pt admin, sa creeze useri
     create_user_form = ""
     if user_is_admin:
         create_user_form = """
         <div style="background:#e9ecef; padding:20px; border-radius:8px; margin-bottom:30px; border:1px solid #ced4da;">
-            <h3 style="margin-top:0; color:#333;">➕ Adaugă Utilizator Nou</h3>
+            <h3 style="margin-top:0; color:#333;">➕ Adauga Utilizator Nou</h3>
             <form method="POST" action="/admin/create-user" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
                 <div>
                     <label style="font-size:0.85em; font-weight:bold;">Username:</label><br>
@@ -1271,10 +1268,10 @@ def list_users():
                     <input type="text" name="last_name" required style="padding:6px; border-radius:4px; border:1px solid #ccc;">
                 </div>
                 <div>
-                    <label style="font-size:0.85em; font-weight:bold;">Parolă:</label><br>
+                    <label style="font-size:0.85em; font-weight:bold;">Parola:</label><br>
                     <input type="password" name="password" required style="padding:6px; border-radius:4px; border:1px solid #ccc;">
                 </div>
-                <button type="submit" style="background:#28a745; color:white; border:none; padding:8px 16px; border-radius:4px; cursor:pointer; font-weight:bold; height:35px;">Creează User</button>
+                <button type="submit" style="background:#28a745; color:white; border:none; padding:8px 16px; border-radius:4px; cursor:pointer; font-weight:bold; height:35px;">Creeaza User</button>
             </form>
         </div>
         """
@@ -1287,7 +1284,7 @@ def list_users():
         delete_button = ""
 
         if user_is_admin:
-            # Checkbox-uri roluri
+            # Checkboxuri pt roluri
             checkboxes = ""
             for r in VISIBLE_ROLES:
                 checked = "checked" if r in current_roles else ""
@@ -1308,13 +1305,13 @@ def list_users():
             
             delete_button = f"""
             <td style="border-bottom:1px solid #eee; text-align:center;">
-                <form method="POST" action="/admin/delete-user/{u.keycloak_id}" onsubmit="return confirm('Sigur ștergi utilizatorul {u.username}?');" style="margin:0;">
+                <form method="POST" action="/admin/delete-user/{u.keycloak_id}" onsubmit="return confirm('Sigur stergi utilizatorul {u.username}?');" style="margin:0;">
                     <button type="submit" style="background:#dc3545; color:white; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; font-size:0.8em">🗑️</button>
                 </form>
             </td>
             """
 
-        # Construim rândul cu noile coloane: u.first_name și u.last_name
+        # Completare rand tabel
         rows += f"""
         <tr>
             <td style="border-bottom:1px solid #eee"><b>{(u.username or "")}</b></td>
@@ -1327,8 +1324,8 @@ def list_users():
         </tr>
         """
 
-    # Antete dinamice în funcție de rol
-    admin_headers = '<th align="left">Modifică Roluri</th><th align="center">Acțiuni</th>' if user_is_admin else ""
+    # Antete in functie de rol
+    admin_headers = '<th align="left">Modifica Roluri</th><th align="center">Actiuni</th>' if user_is_admin else ""
 
     return f"""
     <html>
@@ -1357,12 +1354,12 @@ def list_users():
                 </tr>
             </thead>
             <tbody>
-                {rows if rows else "<tr><td colspan='7' align='center'>Nu există utilizatori înregistrați.</td></tr>"}
+                {rows if rows else "<tr><td colspan='7' align='center'>Nu exista utilizatori inregistrati.</td></tr>"}
             </tbody>
         </table>
 
         <div style="margin-top:30px;">
-            <a href="/"><button style="background:#6c757d; color:white; border:none; padding:12px 24px; border-radius:8px; cursor:pointer; font-weight:bold;">⬅ Înapoi la Dashboard</button></a>
+            <a href="/"><button style="background:#6c757d; color:white; border:none; padding:12px 24px; border-radius:8px; cursor:pointer; font-weight:bold;">⬅ Inapoi la Dashboard</button></a>
         </div>
     </div>
     </body>
@@ -1395,9 +1392,9 @@ def approve_leave(leave_id):
     db.session.commit()
 
     if updated == 0:
-        return "Cererea a fost deja procesată de alt HR.", 409
+        return "Cererea a fost deja procesata de alt HR.", 409
 
-    # ✅ după ce a reușit update-ul, citim cererea și trimitem email
+    # Dupa update trimitem email
     leave = LeaveRequest.query.get_or_404(leave_id)
     emp_email = email_for_sub(leave.user_id)
     subject, body = build_leave_email(LeaveStatus.APPROVED, leave)
@@ -1412,7 +1409,7 @@ def approve_leave(leave_id):
 
 
 
-
+# HR – Reject concediu
 @app.route("/leave/<int:leave_id>/reject", methods=["POST"])
 def reject_leave(leave_id):
     if "access_token" not in session:
@@ -1436,7 +1433,7 @@ def reject_leave(leave_id):
     db.session.commit()
 
     if updated == 0:
-        return "Cererea a fost deja procesată de alt HR.", 409
+        return "Cererea a fost deja procesata de alt HR.", 409
 
     leave = LeaveRequest.query.get_or_404(leave_id)
     emp_email = email_for_sub(leave.user_id)
@@ -1462,7 +1459,7 @@ def login():
         f"&scope=openid profile email"
     )
 
-
+# Callback dupa login
 @app.route("/callback")
 def callback():
     code = request.args.get("code")
@@ -1480,30 +1477,29 @@ def callback():
     if not session["id_token"]:
         return "ID token missing – check Keycloak client scopes", 500
 
-    # Decodăm token-ul pentru a extrage informațiile despre utilizator
+    # Decodare token pt info user
     userinfo = decode_token(token["access_token"])
     
-    # Căutăm utilizatorul în baza de date locală după ID-ul unic din Keycloak (sub)
+    # Caut in baza de date
     user = UserProfile.query.filter_by(keycloak_id=userinfo["sub"]).first()
     
     if not user:
-        # Dacă utilizatorul nu există, îl creăm cu toate detaliile
+        # Daca nu e, il fac
         user = UserProfile(
             keycloak_id=userinfo["sub"],
             username=userinfo.get("preferred_username"),
             email=userinfo.get("email"),
-            first_name=userinfo.get("given_name"), # Salvează Prenume
-            last_name=userinfo.get("family_name"), # Salvează Nume
+            first_name=userinfo.get("given_name"),
+            last_name=userinfo.get("family_name"),
             role=",".join(visible_roles_from_token(userinfo))
         )
         db.session.add(user)
-        logger.info(f"Utilizator nou creat în DB: {user.username}")
+        logger.info(f"Utilizator nou creat in DB: {user.username}")
     else:
-        # Dacă utilizatorul există deja, îi actualizăm datele (în caz că s-au schimbat în Keycloak)
+        # Daca exista, ii dau update la date/roluri
         user.first_name = userinfo.get("given_name")
         user.last_name = userinfo.get("family_name")
         user.email = userinfo.get("email")
-        # Actualizăm și rolurile la fiecare logare pentru siguranță
         user.role = ",".join(visible_roles_from_token(userinfo))
         logger.info(f"Datele utilizatorului {user.username} au fost sincronizate la login.")
 
@@ -1512,6 +1508,7 @@ def callback():
     return redirect(url_for("home"))
 
 
+# Logout (sa nu ramana logat in aplicatie, trebuie sa se logheze iar)
 @app.route("/logout")
 def logout():
     id_token = session.get("id_token")

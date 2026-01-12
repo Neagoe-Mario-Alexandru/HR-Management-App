@@ -3,9 +3,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 
 
-# ==========================
 # Users
-# ==========================
 class UserProfile(db.Model):
     __tablename__ = "users"
 
@@ -13,7 +11,7 @@ class UserProfile(db.Model):
     keycloak_id = db.Column(db.String(255), unique=True, nullable=False)
     username = db.Column(db.String(100), nullable=True)
     email = db.Column(db.String(255), nullable=True)
-    # --- ADĂUGA ACESTE DOUĂ COLOANE ---
+    # --- ADAUGA ACESTE DOUA COLOANE ---
     first_name = db.Column(db.String(100), nullable=True)
     last_name = db.Column(db.String(100), nullable=True)
     # ----------------------------------
@@ -21,9 +19,7 @@ class UserProfile(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
-# ==========================
 # Leave requests
-# ==========================
 class LeaveStatus(PyEnum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
@@ -35,7 +31,6 @@ class LeaveRequest(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    # Keycloak sub
     user_id = db.Column(db.String(255), nullable=False)
 
     start_date = db.Column(db.Date, nullable=False)
@@ -65,9 +60,7 @@ class LeaveRequest(db.Model):
         }
 
 
-# ==========================
-# Expense reimbursement (Deconturi)
-# ==========================
+# Deconturi
 class ExpenseStatus(PyEnum):
     PENDING = "PENDING"
     HR_APPROVED = "HR_APPROVED"
@@ -88,16 +81,16 @@ class ExpenseClaim(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
 
-    # Keycloak sub (angajat)
+    # Angajati
     user_id = db.Column(db.String(255), nullable=False, index=True)
 
-    # bani (standard float)
-    amount = db.Column(db.Float, nullable=False)  # changed from amount_cents
+    # Bani
+    amount = db.Column(db.Float, nullable=False)
     currency = db.Column(db.String(10), nullable=False, default="RON")
 
     description = db.Column(db.Text, nullable=True)
 
-    # status
+    # Status
     status = db.Column(
         db.Enum(ExpenseStatus, name="expense_status"),
         default=ExpenseStatus.PENDING,
@@ -105,17 +98,17 @@ class ExpenseClaim(db.Model):
         index=True
     )
 
-    # Stripe fields (optional)
+    # Stripe fields
     stripe_payment_intent_id = db.Column(db.String(255), nullable=True)
     stripe_charge_id = db.Column(db.String(255), nullable=True)
 
-    # pentru erori
+    # In caz de erori
     failure_reason = db.Column(db.Text, nullable=True)
 
-    # optional: cine a aprobat decontul
+    # Cine a aprobat
     approved_by = db.Column(db.String(255), nullable=True)
 
-    # timestamps
+    # Timestamps
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
