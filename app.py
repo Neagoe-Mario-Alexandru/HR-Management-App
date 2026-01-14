@@ -592,52 +592,7 @@ def hr_reject_expense(expense_id):
     return redirect(url_for("view_hr_expenses"))
 
 
-# Admin - Update Roluri
-@app.route("/admin/update-roles/<user_id>", methods=["POST"])
-def admin_update_roles(user_id):
-    if "access_token" not in session:
-        return redirect(url_for("home"))
-    
-    try:
-        # Initializez KeycloakAdmin
-        admin_kc = KeycloakAdmin(
-            server_url=os.environ.get("KEYCLOAK_URL", "http://keycloak:8080") + "/",
-            client_id=os.environ.get("KEYCLOAK_CLIENT_ID", "backend-scd"),
-            realm_name=os.environ.get("KEYCLOAK_REALM", "proiect-scd"),
-            client_secret_key=os.environ.get("KEYCLOAK_SECRET", ""),
-            user_realm_name=os.environ.get("KEYCLOAK_REALM", "proiect-scd"),
-            verify=True
-        )
 
-        # Lista de roluri
-        all_realm_roles = admin_kc.get_realm_roles()
-        
-        # Rolurile selectate in formular
-        new_roles_names = request.form.getlist("roles")
-        
-        # Ce am de adaugat si ce de sters
-        to_add = [r for r in all_realm_roles if r['name'] in new_roles_names]
-        to_rem = [r for r in all_realm_roles if r['name'] in VISIBLE_ROLES and r['name'] not in new_roles_names]
-
-        # Eliminare roluri
-        if to_rem:
-            admin_kc.delete_realm_roles_of_user(user_id=user_id, roles=to_rem)
-        
-        # Adaugare roluri
-        if to_add:
-            admin_kc.assign_realm_roles(user_id=user_id, roles=to_add)
-
-        # Sinconizare DB local
-        u = UserProfile.query.filter_by(keycloak_id=user_id).first()
-        if u:
-            u.role = ",".join(new_roles_names)
-            db.session.commit()
-            
-        return redirect(url_for("list_users"))
-
-    except Exception as e:
-        logger.error(f"EROARE ADMIN: {str(e)}")
-        return f"Eroare la procesare: {str(e)}", 500
 
 
 # Admin - Vezi Deconturi
@@ -1193,40 +1148,45 @@ def admin_create_user():
         """, 500
         
 
-# Admin - Stergere User  
-@app.route("/admin/delete-user/<user_id>", methods=["POST"])
-def admin_delete_user(user_id):
+# Noua rută RESTful pentru resurse de tip User
+@app.route("/admin/user/<user_id>", methods=["PUT", "DELETE"])
+def rest_manage_user(user_id):
     if "access_token" not in session:
-        return redirect(url_for("home"))
+        return {"error": "Unauthorized"}, 401
     
     userinfo = decode_token(session["access_token"])
     if not is_admin(userinfo):
-        return "Access denied", 403
+        return {"error": "Forbidden"}, 403
 
-    try:
-        admin_kc = get_admin_client()
-
-        # Sterg din keycloak
+    # ȘTERGERE (DELETE)
+    if request.method == "DELETE":
         try:
+            admin_kc = get_admin_client()
             admin_kc.delete_user(user_id)
-        except Exception as k_err:
-            logger.warning(f"Userul {user_id} nu a fost gasit in Keycloak (poate era deja sters): {k_err}")
+            user_db = UserProfile.query.filter_by(keycloak_id=user_id).first()
+            if user_db:
+                db.session.delete(user_db)
+                db.session.commit()
+            return {"status": "success", "message": "User deleted"}, 200
+        except Exception as e:
+            return {"error": str(e)}, 500
 
-        # Sterg din db local
-        user_db = UserProfile.query.filter_by(keycloak_id=user_id).first()
-        if user_db:
-            db.session.delete(user_db)
-            db.session.commit()
-            
-        logger.info(f"User sters: {user_id}")
-        return redirect(url_for("list_users"))
-
-    except Exception as e:
-        logger.error(f"Eroare stergere user: {e}")
-        return f"Eroare la stergere: {str(e)}", 500
+    # ACTUALIZARE ROLURI (PUT)
+    if request.method == "PUT":
+        data = request.get_json() # Așteptăm JSON de la JavaScript
+        new_roles_names = data.get("roles", [])
+        try:
+            update_keycloak_user_roles(user_id, new_roles_names)
+            u = UserProfile.query.filter_by(keycloak_id=user_id).first()
+            if u:
+                u.role = ",".join(new_roles_names)
+                db.session.commit()
+            return {"status": "success", "message": "Roles updated"}, 200
+        except Exception as e:
+            return {"error": str(e)}, 500
         
  
-# Admin / HR - Lista Utilizatori   
+# Admin / HR - Lista Utilizatori (RESTful version)
 @app.route("/users")
 def list_users():
     if "access_token" not in session:
@@ -1244,7 +1204,7 @@ def list_users():
     users = UserProfile.query.order_by(UserProfile.username.asc()).all()
     VISIBLE_ROLES = ["Angajat", "HR", "Administrator"]
 
-    # Doar pt admin, sa creeze useri
+    # Doar pt admin, sa creeze useri (POST - ramane formular clasic pentru creare resursa noua)
     create_user_form = ""
     if user_is_admin:
         create_user_form = """
@@ -1284,34 +1244,33 @@ def list_users():
         delete_button = ""
 
         if user_is_admin:
-            # Checkboxuri pt roluri
+            # Checkboxuri pt roluri (fara tag-ul <form>)
             checkboxes = ""
             for r in VISIBLE_ROLES:
                 checked = "checked" if r in current_roles else ""
                 checkboxes += f"""
                     <label style="margin-right:8px; font-size: 0.8em; cursor:pointer; display:inline-block; background:#f8f9fa; padding:2px 5px; border-radius:3px; border:1px solid #ddd;">
-                        <input type="checkbox" name="roles" value="{r}" {checked}> {r}
+                        <input type="checkbox" class="role-cb-{u.keycloak_id}" value="{r}" {checked}> {r}
                     </label>
                 """
             
+            # Folosim un button cu onclick care apeleaza functia de PUT
             management_cell = f"""
             <td style="border-bottom:1px solid #eee">
-                <form method="POST" action="/admin/update-roles/{u.keycloak_id}" style="margin:0; display:flex; align-items:center; gap:5px">
+                <div style="margin:0; display:flex; align-items:center; gap:5px">
                     <div style="display:flex; flex-wrap:wrap; gap:2px;">{checkboxes}</div>
-                    <button type="submit" style="background:#007bff; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:0.75em">Save</button>
-                </form>
+                    <button onclick="updateUserRoles('{u.keycloak_id}')" style="background:#007bff; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:0.75em">Save (PUT)</button>
+                </div>
             </td>
             """
             
+            # Folosim un button cu onclick care apeleaza functia de DELETE
             delete_button = f"""
             <td style="border-bottom:1px solid #eee; text-align:center;">
-                <form method="POST" action="/admin/delete-user/{u.keycloak_id}" onsubmit="return confirm('Sigur stergi utilizatorul {u.username}?');" style="margin:0;">
-                    <button type="submit" style="background:#dc3545; color:white; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; font-size:0.8em">🗑️</button>
-                </form>
+                <button onclick="deleteUser('{u.keycloak_id}', '{u.username}')" style="background:#dc3545; color:white; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; font-size:0.8em">🗑️ (DELETE)</button>
             </td>
             """
 
-        # Completare rand tabel
         rows += f"""
         <tr>
             <td style="border-bottom:1px solid #eee"><b>{(u.username or "")}</b></td>
@@ -1324,11 +1283,61 @@ def list_users():
         </tr>
         """
 
-    # Antete in functie de rol
-    admin_headers = '<th align="left">Modifica Roluri</th><th align="center">Actiuni</th>' if user_is_admin else ""
+    admin_headers = '<th align="left">Modifica Roluri (PUT)</th><th align="center">Actiuni (DELETE)</th>' if user_is_admin else ""
 
     return f"""
     <html>
+    <head>
+        <title>Management Utilizatori</title>
+        <script>
+        async function deleteUser(userId, username) {{
+            if (!confirm('Sigur vrei sa stergi utilizatorul ' + username + '?')) return;
+            
+            try {{
+                const response = await fetch('/admin/user/' + userId, {{
+                    method: 'DELETE'
+                }});
+                
+                const data = await response.json();
+                if (response.ok) {{
+                    alert('Utilizator sters cu succes!');
+                    window.location.reload();
+                }} else {{
+                    alert('Eroare: ' + (data.error || 'A aparut o problema'));
+                }}
+            }} catch (err) {{
+                alert('Eroare retea: ' + err);
+            }}
+        }}
+
+        async function updateUserRoles(userId) {{
+            const checkboxes = document.querySelectorAll('.role-cb-' + userId);
+            const selectedRoles = Array.from(checkboxes)
+                .filter(cb => cb.checked)
+                .map(cb => cb.value);
+
+            try {{
+                const response = await fetch('/admin/user/' + userId, {{
+                    method: 'PUT',
+                    headers: {{
+                        'Content-Type': 'application/json'
+                    }},
+                    body: JSON.stringify({{ roles: selectedRoles }})
+                }});
+
+                const data = await response.json();
+                if (response.ok) {{
+                    alert('Roluri actualizate prin PUT!');
+                    window.location.reload();
+                }} else {{
+                    alert('Eroare: ' + (data.error || 'A aparut o problema'));
+                }}
+            }} catch (err) {{
+                alert('Eroare retea: ' + err);
+            }}
+        }}
+        </script>
+    </head>
     <body style="font-family:Arial, sans-serif; background:#f4f6f8; color:#333;">
     <div style="background:white; width:1300px; max-width:98vw; margin:40px auto; padding:30px; border-radius:12px; box-shadow:0 4px 15px rgba(0,0,0,0.1)">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; border-bottom:2px solid #eee; padding-bottom:15px;">
@@ -1365,7 +1374,6 @@ def list_users():
     </body>
     </html>
     """
-
 
 
 # HR – Approve / Reject concediu
