@@ -76,15 +76,17 @@ services:
     networks:
       - frontend-net
       - backend-net
+      - worker-net # Am adaugat worker-net pentru a putea publica mesaje in RabbitMQ
     depends_on:
       - keycloak
       - profile-db
       - rabbitmq
       - redis
     secrets:
-      - gmail_app_pass_v2
+      - gmail_app_pass_v3
     environment:
       IN_DOCKER: "1"
+      PYTHONUNBUFFERED: "1" # Fortam logurile sa apara instant
       KEYCLOAK_URL: "http://keycloak:8080"
       KEYCLOAK_REALM: "proiect-scd"
       KEYCLOAK_CLIENT_ID: "backend-scd"
@@ -93,12 +95,14 @@ services:
       SMTP_PORT: "587"
       SMTP_USE_TLS: "1"
       SMTP_USER: "marioalexn@gmail.com"
-      SMTP_PASS_FILE: "/run/secrets/gmail_app_pass_v2"
+      SMTP_PASS_FILE: "/run/secrets/gmail_app_pass_v3"
       SMTP_FROM: "Sistem Concedii <marioalexn@gmail.com>"
       SMTP_TIMEOUT: "20"
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       EXPENSES_EXCHANGE: "expenses"
       EXPENSES_ROUTING_KEY: "expense.requested"
+      EMAIL_EXCHANGE: "email_exchange"
+      EMAIL_ROUTING_KEY: "email.send"
       REDIS_URL: "redis://redis:6379/0"
     deploy:
       replicas: 1
@@ -133,6 +137,34 @@ services:
         constraints:
           - node.role == manager
 
+  mail-worker:
+    image: auth-service:latest # Foloseste aceeasi imagine ca auth-service
+    command: ["python", "-u", "mail_worker.py"] # -u pentru loguri in timp real
+    networks:
+      - worker-net
+      - backend-net
+    depends_on:
+      - rabbitmq
+    secrets:
+      - gmail_app_pass_v3
+    environment:
+      IN_DOCKER: "1"
+      PYTHONUNBUFFERED: "1"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      EMAIL_EXCHANGE: "email_exchange"
+      EMAIL_QUEUE: "email_queue"
+      EMAIL_BIND_KEY: "email.send"
+      SMTP_HOST: "smtp.gmail.com"
+      SMTP_PORT: "587"
+      SMTP_USE_TLS: "1"
+      SMTP_USER: "marioalexn@gmail.com"
+      SMTP_PASS_FILE: "/run/secrets/gmail_app_pass_v3"
+      SMTP_FROM: "Sistem Concedii <marioalexn@gmail.com>"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
 networks:
   frontend-net:
     driver: overlay
@@ -146,5 +178,5 @@ volumes:
   profile-data:
 
 secrets:
-  gmail_app_pass_v2:
+  gmail_app_pass_v3:
     external: true

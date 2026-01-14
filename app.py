@@ -39,6 +39,8 @@ if SMTP_PASS_FILE and not SMTP_PASS:
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
 EXPENSES_EXCHANGE = os.environ.get("EXPENSES_EXCHANGE", "expenses")
 EXPENSES_ROUTING_KEY = os.environ.get("EXPENSES_ROUTING_KEY", "expense.requested")
+EMAIL_EXCHANGE = "email_exchange"
+EMAIL_ROUTING_KEY = "email.send"
 
 
 #Redis config
@@ -584,7 +586,12 @@ def hr_reject_expense(expense_id):
     subject, body = build_expense_email(ExpenseStatus.REJECTED, exp)
 
     try:
-        send_email(emp_email, subject, body)
+        email_payload = {
+            "to": emp_email,
+            "subject": subject,
+            "body": body
+        }
+        rabbit_publish(EMAIL_EXCHANGE, EMAIL_ROUTING_KEY, email_payload)
     except Exception as e:
         logger.error("Expense HR reject email fail: %s", e)
 
@@ -688,7 +695,12 @@ def admin_approve_expense(expense_id):
     subject, body = build_expense_email(ExpenseStatus.QUEUED, exp)
 
     try:
-        send_email(emp_email, subject, body)
+        email_payload = {
+            "to": emp_email,
+            "subject": subject,
+            "body": body
+        }
+        rabbit_publish(EMAIL_EXCHANGE, EMAIL_ROUTING_KEY, email_payload)
     except Exception as e:
         logger.error("Expense admin approve email failed: %s", e)
 
@@ -734,7 +746,12 @@ def admin_reject_expense(expense_id):
     subject, body = build_expense_email(ExpenseStatus.REJECTED, exp)
 
     try:
-        send_email(emp_email, subject, body)
+        email_payload = {
+            "to": emp_email,
+            "subject": subject,
+            "body": body
+        }
+        rabbit_publish(EMAIL_EXCHANGE, EMAIL_ROUTING_KEY, email_payload)
     except Exception as e:
         logger.error("Expense admin reject email fail: %s", e)
 
@@ -1409,7 +1426,12 @@ def approve_leave(leave_id):
 
     try:
         logger.info("emp_email=%s leave_id=%s user_id=%s", emp_email, leave_id, leave.user_id)
-        send_email(emp_email, subject, body)
+        email_payload = {
+            "to": emp_email,
+            "subject": subject,
+            "body": body
+        }
+        rabbit_publish(EMAIL_EXCHANGE, EMAIL_ROUTING_KEY, email_payload)
     except Exception as e:
         print("Email send failed:", e)
 
@@ -1448,7 +1470,12 @@ def reject_leave(leave_id):
     subject, body = build_leave_email(LeaveStatus.REJECTED, leave)
 
     try:
-        send_email(emp_email, subject, body)
+        email_payload = {
+            "to": emp_email,
+            "subject": subject,
+            "body": body
+        }
+        rabbit_publish(EMAIL_EXCHANGE, EMAIL_ROUTING_KEY, email_payload)
     except Exception as e:
         print("Email send failed:", e)
 
