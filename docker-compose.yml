@@ -105,6 +105,7 @@ services:
       EXPENSES_BIND_KEY: "expense.requested"
       NOTIFY_EXCHANGE: "notifications"
       NOTIFY_ROUTING_KEY: "notify.expense"
+      STRIPE_SECRET_KEY: "sk_test_51SpRkvChzYFGZaU9sN9XCLCOukgVixOHxHBzPWFx6G8clm8sddJ6fSIcvvKB2plRxV6pbRiwRPXNHMYgms5533Sc00NJpWp3e6"
     deploy:
       replicas: 2
 

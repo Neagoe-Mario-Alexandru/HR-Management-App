@@ -163,13 +163,23 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
                 )
                 return
 
-            # Stripe real
+            # Stripe real - Plata automata din Worker
             pi = stripe.PaymentIntent.create(
                 amount=int(exp.amount * 100),
-                currency=exp.currency,
+                # Corectie automata pentru moneda: Stripe vrea 'ron', nu 'lei'
+                currency=exp.currency.lower() if exp.currency.lower() != "lei" else "ron",
                 description=exp.description or f"Expense #{exp.id}",
                 confirm=True,
-                off_session=True,
+                off_session=True, # Ii spunem Stripe ca nu e utilizatorul la tastatura
+                
+                # Folosim un Payment Method de test (simuleaza cardul tau 4242...)
+                payment_method="pm_card_visa", 
+                
+                # Dezactivam redirectionarile (ex. 3D Secure) pentru ca workerul nu poate da click
+                automatic_payment_methods={
+                    "enabled": True,
+                    "allow_redirects": "never"
+                },
                 metadata={
                     "expense_id": str(exp.id),
                     "user_id": exp.user_id,
