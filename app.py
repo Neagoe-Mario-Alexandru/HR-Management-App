@@ -680,18 +680,46 @@ def hr_reject_expense(expense_id):
 # Admin - Vezi Deconturi
 @app.route("/expenses/admin")
 def view_admin_expenses():
-    if "access_token" not in session:
+    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    auth_header = request.headers.get("Authorization")
+    token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    else:
+        token = session.get("access_token")
+
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except Exception:
+        return jsonify({"error": "Invalid token"}), 401
+    # -----------------------------------------------
+
     if not is_admin(userinfo):
         return "Access denied", 403
 
+    # Adminul vede doar ce a fost aprobat de HR
     items = (ExpenseClaim.query
              .filter(ExpenseClaim.status == ExpenseStatus.HR_APPROVED)
              .order_by(ExpenseClaim.created_at.desc())
              .all())
 
+    # --- RĂSPUNS JSON PENTRU POSTMAN ---
+    if auth_header:
+        return jsonify([{
+            "id": e.id,
+            "user": username_for_sub(e.user_id),
+            "amount": float(e.amount),
+            "currency": (e.currency or "").upper(),
+            "description": e.description,
+            "status": e.status.value,
+            "created_at": e.created_at.strftime('%Y-%m-%d')
+        } for e in items])
+
+    # --- RĂSPUNS HTML (Design-ul tău original) ---
     rows = ""
     for e in items:
         employee_name = username_for_sub(e.user_id)
@@ -744,26 +772,39 @@ def view_admin_expenses():
     </body></html>
     """
 
-
-# Admin - Approve la Decont
+# Admin - Approve la Decont (Final Step -> RabbitMQ)
 @app.route("/expenses/<int:expense_id>/admin/approve", methods=["POST"])
 def admin_approve_expense(expense_id):
-    if "access_token" not in session:
+    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
+
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except Exception:
+        return jsonify({"error": "Invalid token"}), 401
+    # -----------------------------------------------
+
     if not is_admin(userinfo):
         return "Access denied", 403
 
     exp = ExpenseClaim.query.get_or_404(expense_id)
     if exp.status != ExpenseStatus.HR_APPROVED:
-        return "Expense not ready for admin approval", 409
+        error_msg = f"Expense {expense_id} is in status {exp.status.value}, not ready for admin approval"
+        if auth_header:
+            return jsonify({"error": error_msg}), 409
+        return error_msg, 409
 
-    # Marcat in db gata de procesat
+    # 1. Marcat in db ca fiind pus in coada (QUEUED)
     exp.status = ExpenseStatus.QUEUED
     exp.approved_by = userinfo["sub"]
     db.session.commit()
 
+    # 2. Notificare Email (via RabbitMQ)
     emp_email = email_for_sub(exp.user_id)
     subject, body = build_expense_email(ExpenseStatus.QUEUED, exp)
 
@@ -777,7 +818,7 @@ def admin_approve_expense(expense_id):
     except Exception as e:
         logger.error("Expense admin approve email failed: %s", e)
 
-    # Publish mesaj in Rabbit
+    # 3. Publish mesajul de PLATA in RabbitMQ
     trace_id = str(uuid.uuid4())
     msg = {
         "event": "expense.requested",
@@ -793,6 +834,16 @@ def admin_approve_expense(expense_id):
     }
 
     rabbit_publish(EXPENSES_EXCHANGE, EXPENSES_ROUTING_KEY, msg)
+    logger.info(f"Admin a aprobat decontul {expense_id}. Mesaj trimis spre Expense Worker cu trace_id: {trace_id}")
+
+    # --- RASPUNS DIFERENTIAT ---
+    if auth_header:
+        return jsonify({
+            "status": "success",
+            "message": "Expense approved and sent to payment queue",
+            "expense_id": exp.id,
+            "trace_id": trace_id
+        }), 200
 
     return redirect(url_for("view_admin_expenses"))
 
@@ -801,20 +852,39 @@ def admin_approve_expense(expense_id):
 # Admin - Reject Decont
 @app.route("/expenses/<int:expense_id>/admin/reject", methods=["POST"])
 def admin_reject_expense(expense_id):
-    if "access_token" not in session:
+    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
+
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except Exception:
+        return jsonify({"error": "Invalid token"}), 401
+    # -----------------------------------------------
+
     if not is_admin(userinfo):
         return "Access denied", 403
 
     exp = ExpenseClaim.query.get_or_404(expense_id)
+    
+    # Admin-ul poate respinge doar deconturile care sunt în starea HR_APPROVED
     if exp.status != ExpenseStatus.HR_APPROVED:
-        return "Expense not ready for admin decision", 409
+        error_msg = f"Expense {expense_id} is in status {exp.status.value}, cannot be rejected by Admin"
+        if auth_header:
+            return jsonify({"error": error_msg}), 409
+        return error_msg, 409
 
+    # Actualizăm statusul în baza de date
     exp.status = ExpenseStatus.REJECTED
     exp.failure_reason = "Rejected by an Admin"
+    exp.approved_by = userinfo["sub"] # Salvăm cine a luat decizia finală
     db.session.commit()
+    
+    # Notificare Email prin RabbitMQ
     emp_email = email_for_sub(exp.user_id)
     subject, body = build_expense_email(ExpenseStatus.REJECTED, exp)
 
@@ -825,8 +895,17 @@ def admin_reject_expense(expense_id):
             "body": body
         }
         rabbit_publish(EMAIL_EXCHANGE, EMAIL_ROUTING_KEY, email_payload)
+        logger.info(f"Admin {userinfo.get('preferred_username')} a respins decontul {expense_id}. Email trimis in coada.")
     except Exception as e:
         logger.error("Expense admin reject email fail: %s", e)
+
+    # Răspuns diferențiat
+    if auth_header:
+        return jsonify({
+            "status": "rejected",
+            "message": f"Expense {expense_id} was rejected by Admin",
+            "notified_user": emp_email
+        }), 200
 
     return redirect(url_for("view_admin_expenses"))
 
@@ -1260,104 +1339,148 @@ def view_all_leaves():
     </html>
     """
 
-# Admin - Creare User 
+# Admin - Creare Utilizator Nou
 @app.route("/admin/create-user", methods=["POST"])
 def admin_create_user():
-    if "access_token" not in session:
-        return redirect(url_for("home"))
-    
-    userinfo = decode_token(session["access_token"])
-    if not is_admin(userinfo):
-        return "Access denied", 403
+    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
-    # Date din formular
-    username = request.form.get("username")
-    email = request.form.get("email")
-    first_name = request.form.get("first_name")
-    last_name = request.form.get("last_name")
-    password = request.form.get("password")
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
+        return redirect(url_for("home"))
 
     try:
+        userinfo = decode_token(token)
+    except Exception:
+        return jsonify({"error": "Invalid token"}), 401
+    # -----------------------------------------------
+
+    if not is_admin(userinfo):
+        return "Access denied. Admin only.", 403
+
+    # Detectăm sursa datelor (JSON pentru Postman, Form pentru Browser)
+    if request.is_json:
+        data = request.get_json()
+    else:
+        data = request.form
+
+    username = data.get("username")
+    email = data.get("email")
+    password = data.get("password")
+    first_name = data.get("first_name")
+    last_name = data.get("last_name")
+
+    try:
+        # 1. Creare utilizator în Keycloak
         admin_kc = get_admin_client()
         
-        # Creez in Keycloak
-        new_user_payload = {
-            "username": username,
+        # Structura cerută de API-ul Keycloak
+        new_user_kc = admin_kc.create_user({
             "email": email,
+            "username": username,
+            "enabled": True,
             "firstName": first_name,
             "lastName": last_name,
-            "enabled": True,
-            "emailVerified": True,
-            "credentials": [{
-                "value": password,
-                "type": "password",
-                "temporary": False
-            }]
-        }
-        
-        # Keycloak imi da inapoi id
-        new_user_id = admin_kc.create_user(new_user_payload)
-        
-        # Il bag in db local
-        new_db_user = UserProfile(
-            keycloak_id=new_user_id,
+            "credentials": [{"value": password, "type": "password", "temporary": False}]
+        }, exist_ok=False) # Aruncă eroare dacă userul există deja
+
+        # 2. Keycloak returnează ID-ul noului utilizator
+        # Notă: uneori create_user returnează ID-ul, alteori trebuie căutat după username
+        new_id = new_user_kc if isinstance(new_user_kc, str) else admin_kc.get_user_id(username)
+
+        # 3. Salvare în baza de date locală (UserProfile)
+        new_user_db = UserProfile(
+            keycloak_id=new_id,
             username=username,
             email=email,
-            role="" 
+            first_name=first_name,
+            last_name=last_name,
+            role="Angajat" # Rol default
         )
-        db.session.add(new_db_user)
+        db.session.add(new_user_db)
         db.session.commit()
 
-        logger.info(f"User creat cu succes: {username} ({new_user_id})")
-        return redirect(url_for("list_users"))
+        logger.info(f"Admin {userinfo.get('preferred_username')} a creat utilizatorul {username} cu ID {new_id}")
+
+        if auth_header:
+            return jsonify({
+                "status": "success",
+                "message": "User created in Keycloak and Local DB",
+                "keycloak_id": new_id
+            }), 201
 
     except Exception as e:
-        logger.error(f"Eroare creare user: {e}")
-        return f"""
-        <html><body>
-            <h3 style="color:red">Eroare la crearea utilizatorului</h3>
-            <p>{str(e)}</p>
-            <a href="/users">Inapoi</a>
-        </body></html>
-        """, 500
+        logger.error(f"Error creating user: {e}")
+        db.session.rollback()
+        if auth_header:
+            return jsonify({"error": str(e)}), 500
+        return f"Eroare la creare: {str(e)}", 500
+
+    return redirect(url_for("list_users"))
         
 
 # Noua rută RESTful pentru resurse de tip User
 @app.route("/admin/user/<user_id>", methods=["PUT", "DELETE"])
 def rest_manage_user(user_id):
-    if "access_token" not in session:
-        return {"error": "Unauthorized"}, 401
-    
-    userinfo = decode_token(session["access_token"])
-    if not is_admin(userinfo):
-        return {"error": "Forbidden"}, 403
+    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
-    # ȘTERGERE (DELETE)
+    if not token:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    try:
+        userinfo = decode_token(token)
+    except Exception:
+        return jsonify({"error": "Invalid token"}), 401
+
+    if not is_admin(userinfo):
+        return jsonify({"error": "Forbidden. Admin access required."}), 403
+
+    # --- ȘTERGERE (DELETE) ---
     if request.method == "DELETE":
         try:
+            # 1. Ștergere din Keycloak (via Admin Client)
             admin_kc = get_admin_client()
             admin_kc.delete_user(user_id)
+            
+            # 2. Ștergere din baza de date locală
             user_db = UserProfile.query.filter_by(keycloak_id=user_id).first()
             if user_db:
+                username_deleted = user_db.username
                 db.session.delete(user_db)
                 db.session.commit()
-            return {"status": "success", "message": "User deleted"}, 200
+                logger.info(f"Admin {userinfo.get('preferred_username')} a sters userul: {username_deleted}")
+            
+            return jsonify({"status": "success", "message": "User deleted from Keycloak and DB"}), 200
         except Exception as e:
-            return {"error": str(e)}, 500
+            logger.error(f"Error deleting user {user_id}: {e}")
+            return jsonify({"error": str(e)}), 500
 
-    # ACTUALIZARE ROLURI (PUT)
+    # --- ACTUALIZARE ROLURI (PUT) ---
     if request.method == "PUT":
-        data = request.get_json() # Așteptăm JSON de la JavaScript
+        data = request.get_json()  # Așteptăm JSON de la client (JS sau Postman)
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+            
         new_roles_names = data.get("roles", [])
+        
         try:
+            # 1. Update roluri în Keycloak
             update_keycloak_user_roles(user_id, new_roles_names)
+            
+            # 2. Sincronizare în DB locală
             u = UserProfile.query.filter_by(keycloak_id=user_id).first()
             if u:
                 u.role = ",".join(new_roles_names)
                 db.session.commit()
-            return {"status": "success", "message": "Roles updated"}, 200
+                logger.info(f"Admin {userinfo.get('preferred_username')} a actualizat rolurile lui {u.username}: {u.role}")
+            
+            return jsonify({"status": "success", "message": "Roles updated in Keycloak and DB"}), 200
         except Exception as e:
-            return {"error": str(e)}, 500
+            logger.error(f"Error updating roles for user {user_id}: {e}")
+            return jsonify({"error": str(e)}), 500
         
  
 # Admin / HR - Lista Utilizatori (RESTful version)
