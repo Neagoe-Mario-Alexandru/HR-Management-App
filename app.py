@@ -479,10 +479,20 @@ def home():
 # Deconturi - HR
 @app.route("/expenses/hr")
 def view_hr_expenses():
-    if "access_token" not in session:
+    # --- LOGICA HIBRIDA TOKEN (Postman + Browser) ---
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
+
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except:
+        return jsonify({"error": "Invalid token"}), 401
+    # -----------------------------------------------
+
     if not (is_hr(userinfo) or is_admin(userinfo)):
         return "Access denied", 403
 
@@ -491,6 +501,19 @@ def view_hr_expenses():
              .order_by(ExpenseClaim.created_at.desc())
              .all())
 
+    # --- RASPUNS JSON PENTRU POSTMAN ---
+    if auth_header:
+        return jsonify([{
+            "id": e.id,
+            "employee": username_for_sub(e.user_id),
+            "amount": float(e.amount),
+            "currency": (e.currency or "").upper(),
+            "description": e.description,
+            "status": e.status.value,
+            "created_at": e.created_at.strftime('%Y-%m-%d')
+        } for e in items])
+
+    # --- HTML-UL TAU ORIGINAL (NESCHIMBAT) ---
     rows = ""
     for e in items:
         employee_name = username_for_sub(e.user_id)
@@ -547,42 +570,84 @@ def view_hr_expenses():
 # HR - Approve Decont
 @app.route("/expenses/<int:expense_id>/hr/approve", methods=["POST"])
 def hr_approve_expense(expense_id):
-    if "access_token" not in session:
+    # --- LOGICA HIBRIDA TOKEN ---
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
+
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except:
+        return jsonify({"error": "Invalid token"}), 401
+    # -----------------------------
+
     if not (is_hr(userinfo) or is_admin(userinfo)):
         return "Access denied", 403
 
     exp = ExpenseClaim.query.get_or_404(expense_id)
+    
+    # Verificam daca este in starea corecta pentru a fi aprobata de HR
     if exp.status != ExpenseStatus.PENDING:
-        return "Expense already processed", 409
+        if auth_header:
+            return jsonify({"error": f"Expense is in status {exp.status.value}, cannot approve"}), 400
+        return redirect(url_for("view_hr_expenses"))
 
     exp.status = ExpenseStatus.HR_APPROVED
     exp.approved_by = userinfo["sub"]
     db.session.commit()
+    
+    logger.info(f"HR {userinfo.get('preferred_username')} a aprobat decontul ID {expense_id}")
 
+    # Răspuns pentru Postman
+    if auth_header:
+        return jsonify({
+            "status": "success",
+            "message": f"Expense {expense_id} has been approved by HR",
+            "new_status": exp.status.value
+        }), 200
+
+    # Redirect pentru Browser
     return redirect(url_for("view_hr_expenses"))
 
 
-#HR - Reject Decont
+# HR - Reject Decont
 @app.route("/expenses/<int:expense_id>/hr/reject", methods=["POST"])
 def hr_reject_expense(expense_id):
-    if "access_token" not in session:
+    # --- LOGICA HIBRIDA TOKEN (Postman + Browser) ---
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
+
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except:
+        return jsonify({"error": "Invalid token"}), 401
+    # -----------------------------------------------
+
     if not (is_hr(userinfo) or is_admin(userinfo)):
         return "Access denied", 403
 
     exp = ExpenseClaim.query.get_or_404(expense_id)
+    
+    # Verificăm dacă este în starea corectă (PENDING) pentru a fi respins de HR
     if exp.status != ExpenseStatus.PENDING:
+        if auth_header:
+            return jsonify({"error": f"Expense already processed, status is {exp.status.value}"}), 409
         return "Expense already processed", 409
 
+    # Actualizare status
     exp.status = ExpenseStatus.REJECTED
     exp.failure_reason = "Rejected by HR"
     exp.approved_by = userinfo["sub"]
     db.session.commit()
+    
+    # Notificare prin Email via RabbitMQ
     emp_email = email_for_sub(exp.user_id)
     subject, body = build_expense_email(ExpenseStatus.REJECTED, exp)
 
@@ -593,10 +658,19 @@ def hr_reject_expense(expense_id):
             "body": body
         }
         rabbit_publish(EMAIL_EXCHANGE, EMAIL_ROUTING_KEY, email_payload)
+        logger.info(f"HR {userinfo.get('preferred_username')} a respins decontul ID {expense_id}. Email trimis in coada.")
     except Exception as e:
         logger.error("Expense HR reject email fail: %s", e)
 
+    # Răspuns pentru Postman
+    if auth_header:
+        return jsonify({
+            "status": "rejected",
+            "message": f"Expense {expense_id} was rejected",
+            "notified_user": emp_email
+        }), 200
 
+    # Redirect pentru Browser
     return redirect(url_for("view_hr_expenses"))
 
 
@@ -1090,15 +1164,43 @@ def my_expenses():
 # HR – Vede cereri de concediu
 @app.route("/leave/all")
 def view_all_leaves():
-    if "access_token" not in session:
+    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    auth_header = request.headers.get("Authorization")
+    token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    else:
+        token = session.get("access_token")
+
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except Exception:
+        return jsonify({"error": "Invalid token"}), 401
+    # -----------------------------------------------
+
     if not can_manage_leaves(userinfo):
         return "Access denied", 403
 
     leaves = LeaveRequest.query.order_by(LeaveRequest.created_at.desc()).all()
 
+    # --- RĂSPUNS JSON PENTRU POSTMAN ---
+    if auth_header:
+        return jsonify([{
+            "id": l.id,
+            "employee": username_for_sub(l.user_id),
+            "start_date": str(l.start_date),
+            "end_date": str(l.end_date),
+            "reason": l.reason,
+            "status": l.status.value,
+            "approved_by": username_for_sub(l.approved_by) if l.approved_by else "-",
+            "created_at": l.created_at.strftime('%Y-%m-%d')
+        } for l in leaves])
+
+    # --- RĂSPUNS HTML (Design-ul tău original) ---
     rows = ""
     for l in leaves:
         employee_name = username_for_sub(l.user_id)
@@ -1261,11 +1363,24 @@ def rest_manage_user(user_id):
 # Admin / HR - Lista Utilizatori (RESTful version)
 @app.route("/users")
 def list_users():
-    if "access_token" not in session:
+    # --- LOGICA HIBRIDA TOKEN (Postman + Browser) ---
+    auth_header = request.headers.get("Authorization")
+    token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    else:
+        token = session.get("access_token")
+
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
-    
+    try:
+        userinfo = decode_token(token)
+    except:
+        return jsonify({"error": "Invalid token"}), 401
+    # -----------------------------------------------
+
     user_is_admin = is_admin(userinfo)
     user_is_hr = is_hr(userinfo)
     
@@ -1274,9 +1389,22 @@ def list_users():
 
     # Toti din db
     users = UserProfile.query.order_by(UserProfile.username.asc()).all()
+
+    # --- RASPUNS JSON PENTRU POSTMAN ---
+    if auth_header:
+        return jsonify([{
+            "id": u.id,
+            "keycloak_id": u.keycloak_id,
+            "username": u.username,
+            "email": u.email,
+            "first_name": u.first_name,
+            "last_name": u.last_name,
+            "roles": u.role.split(",") if u.role else []
+        } for u in users])
+
+    # --- RASPUNS HTML PENTRU BROWSER (Codul tau original) ---
     VISIBLE_ROLES = ["Angajat", "HR", "Administrator"]
 
-    # Doar pt admin, sa creeze useri (POST - ramane formular clasic pentru creare resursa noua)
     create_user_form = ""
     if user_is_admin:
         create_user_form = """
@@ -1311,12 +1439,10 @@ def list_users():
     rows = ""
     for u in users:
         current_roles = (u.role or "").split(",")
-        
         management_cell = ""
         delete_button = ""
 
         if user_is_admin:
-            # Checkboxuri pt roluri (fara tag-ul <form>)
             checkboxes = ""
             for r in VISIBLE_ROLES:
                 checked = "checked" if r in current_roles else ""
@@ -1326,7 +1452,6 @@ def list_users():
                     </label>
                 """
             
-            # Folosim un button cu onclick care apeleaza functia de PUT
             management_cell = f"""
             <td style="border-bottom:1px solid #eee">
                 <div style="margin:0; display:flex; align-items:center; gap:5px">
@@ -1336,7 +1461,6 @@ def list_users():
             </td>
             """
             
-            # Folosim un button cu onclick care apeleaza functia de DELETE
             delete_button = f"""
             <td style="border-bottom:1px solid #eee; text-align:center;">
                 <button onclick="deleteUser('{u.keycloak_id}', '{u.username}')" style="background:#dc3545; color:white; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; font-size:0.8em">DELETE</button>
@@ -1364,49 +1488,26 @@ def list_users():
         <script>
         async function deleteUser(userId, username) {{
             if (!confirm('Sigur vrei sa stergi utilizatorul ' + username + '?')) return;
-            
             try {{
-                const response = await fetch('/admin/user/' + userId, {{
-                    method: 'DELETE'
-                }});
-                
+                const response = await fetch('/admin/user/' + userId, {{ method: 'DELETE' }});
                 const data = await response.json();
-                if (response.ok) {{
-                    alert('Utilizator sters cu succes!');
-                    window.location.reload();
-                }} else {{
-                    alert('Eroare: ' + (data.error || 'A aparut o problema'));
-                }}
-            }} catch (err) {{
-                alert('Eroare retea: ' + err);
-            }}
+                if (response.ok) {{ alert('Utilizator sters!'); window.location.reload(); }}
+                else {{ alert('Eroare: ' + (data.error || 'Problema')); }}
+            }} catch (err) {{ alert('Eroare retea: ' + err); }}
         }}
-
         async function updateUserRoles(userId) {{
             const checkboxes = document.querySelectorAll('.role-cb-' + userId);
-            const selectedRoles = Array.from(checkboxes)
-                .filter(cb => cb.checked)
-                .map(cb => cb.value);
-
+            const selectedRoles = Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value);
             try {{
                 const response = await fetch('/admin/user/' + userId, {{
                     method: 'PUT',
-                    headers: {{
-                        'Content-Type': 'application/json'
-                    }},
+                    headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ roles: selectedRoles }})
                 }});
-
                 const data = await response.json();
-                if (response.ok) {{
-                    alert('Roluri actualizate prin PUT!');
-                    window.location.reload();
-                }} else {{
-                    alert('Eroare: ' + (data.error || 'A aparut o problema'));
-                }}
-            }} catch (err) {{
-                alert('Eroare retea: ' + err);
-            }}
+                if (response.ok) {{ alert('Roluri actualizate!'); window.location.reload(); }}
+                else {{ alert('Eroare: ' + (data.error || 'Problema')); }}
+            }} catch (err) {{ alert('Eroare retea: ' + err); }}
         }}
         </script>
     </head>
@@ -1420,27 +1521,18 @@ def list_users():
                 </span>
             </div>
         </div>
-
         {create_user_form}
-
         <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse:collapse">
             <thead>
                 <tr style="background:#343a40; color:white">
-                    <th align="left">Username</th>
-                    <th align="left">Email</th>
-                    <th align="left">Prenume</th>
-                    <th align="left">Nume</th>
-                    <th align="left">Roluri</th>
-                    {admin_headers}
+                    <th align="left">Username</th><th align="left">Email</th><th align="left">Prenume</th>
+                    <th align="left">Nume</th><th align="left">Roluri</th>{admin_headers}
                 </tr>
             </thead>
-            <tbody>
-                {rows if rows else "<tr><td colspan='7' align='center'>Nu exista utilizatori inregistrati.</td></tr>"}
-            </tbody>
+            <tbody>{rows if rows else "<tr><td colspan='7' align='center'>Nu exista utilizatori.</td></tr>"}</tbody>
         </table>
-
         <div style="margin-top:30px;">
-            <a href="/"><button style="background:#6c757d; color:white; border:none; padding:12px 24px; border-radius:8px; cursor:pointer; font-weight:bold;">⬅ Inapoi la Dashboard</button></a>
+            <a href="/"><button style="background:#6c757d; color:white; border:none; padding:12px 24px; border-radius:8px; cursor:pointer; font-weight:bold;">⬅ Inapoi</button></a>
         </div>
     </div>
     </body>
@@ -1448,18 +1540,29 @@ def list_users():
     """
 
 
-# HR – Approve / Reject concediu
+# HR – Approve concediu
 @app.route("/leave/<int:leave_id>/approve", methods=["POST"])
 def approve_leave(leave_id):
-    if "access_token" not in session:
+    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
+
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except Exception:
+        return jsonify({"error": "Invalid token"}), 401
+    # -----------------------------------------------
+
     if not can_manage_leaves(userinfo):
         return "Access denied", 403
 
+    # Încercăm update-ul direct în DB pentru a evita race conditions
     updated = (
-        LeaveRequest.query
+        db.session.query(LeaveRequest)
         .filter(LeaveRequest.id == leave_id, LeaveRequest.status == LeaveStatus.PENDING)
         .update(
             {
@@ -1472,15 +1575,18 @@ def approve_leave(leave_id):
     db.session.commit()
 
     if updated == 0:
-        return "Cererea a fost deja procesata de alt HR.", 409
+        error_msg = "Cererea a fost deja procesata sau nu exista."
+        if auth_header:
+            return jsonify({"error": error_msg}), 409
+        return error_msg, 409
 
-    # Dupa update trimitem email
-    leave = LeaveRequest.query.get_or_404(leave_id)
+    # Luăm datele pentru a trimite email-ul
+    leave = LeaveRequest.query.get(leave_id)
     emp_email = email_for_sub(leave.user_id)
     subject, body = build_leave_email(LeaveStatus.APPROVED, leave)
 
     try:
-        logger.info("emp_email=%s leave_id=%s user_id=%s", emp_email, leave_id, leave.user_id)
+        logger.info("Trimitere email aprobare: emp_email=%s leave_id=%s", emp_email, leave_id)
         email_payload = {
             "to": emp_email,
             "subject": subject,
@@ -1488,24 +1594,42 @@ def approve_leave(leave_id):
         }
         rabbit_publish(EMAIL_EXCHANGE, EMAIL_ROUTING_KEY, email_payload)
     except Exception as e:
-        print("Email send failed:", e)
+        logger.error("Email send failed for leave %s: %s", leave_id, e)
+
+    # Răspuns în funcție de client
+    if auth_header:
+        return jsonify({
+            "status": "success",
+            "message": f"Leave request {leave_id} approved",
+            "notified_email": emp_email
+        }), 200
 
     return redirect(url_for("view_all_leaves"))
-
 
 
 # HR – Reject concediu
 @app.route("/leave/<int:leave_id>/reject", methods=["POST"])
 def reject_leave(leave_id):
-    if "access_token" not in session:
+    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
+
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except Exception:
+        return jsonify({"error": "Invalid token"}), 401
+    # -----------------------------------------------
+
     if not can_manage_leaves(userinfo):
         return "Access denied", 403
 
+    # Executăm update-ul doar dacă cererea este încă PENDING
     updated = (
-        LeaveRequest.query
+        db.session.query(LeaveRequest)
         .filter(LeaveRequest.id == leave_id, LeaveRequest.status == LeaveStatus.PENDING)
         .update(
             {
@@ -1518,9 +1642,13 @@ def reject_leave(leave_id):
     db.session.commit()
 
     if updated == 0:
-        return "Cererea a fost deja procesata de alt HR.", 409
+        error_msg = "Cererea a fost deja procesata de alt cineva sau nu exista."
+        if auth_header:
+            return jsonify({"error": error_msg}), 409
+        return error_msg, 409
 
-    leave = LeaveRequest.query.get_or_404(leave_id)
+    # Preluăm datele pentru notificarea prin email
+    leave = LeaveRequest.query.get(leave_id)
     emp_email = email_for_sub(leave.user_id)
     subject, body = build_leave_email(LeaveStatus.REJECTED, leave)
 
@@ -1531,8 +1659,17 @@ def reject_leave(leave_id):
             "body": body
         }
         rabbit_publish(EMAIL_EXCHANGE, EMAIL_ROUTING_KEY, email_payload)
+        logger.info(f"Concediu ID {leave_id} respins de {userinfo.get('preferred_username')}. Email trimis in RabbitMQ.")
     except Exception as e:
-        print("Email send failed:", e)
+        logger.error("Email send failed for rejection leave %s: %s", leave_id, e)
+
+    # Răspuns în funcție de client
+    if auth_header:
+        return jsonify({
+            "status": "rejected",
+            "message": f"Leave request {leave_id} has been rejected",
+            "notified_email": emp_email
+        }), 200
 
     return redirect(url_for("view_all_leaves"))
 
