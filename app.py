@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, session, url_for
+from flask import Flask, request, redirect, session, url_for, jsonify
 from keycloak import KeycloakOpenID, KeycloakAdmin
 from models import db, UserProfile, LeaveRequest, LeaveStatus, ExpenseClaim, ExpenseStatus
 from datetime import datetime, timedelta
@@ -636,7 +636,6 @@ def view_admin_expenses():
 
         rows += f"""
         <tr>
-          <td>{e.id}</td>
           <td>{employee_name}</td>
           <td>{amount_display}</td>
           <td>{(e.currency or "").upper()}</td>
@@ -654,7 +653,6 @@ def view_admin_expenses():
 
       <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse">
         <tr style="background:#0066ff;color:white">
-          <th align="left">ID</th>
           <th align="left">User</th>
           <th align="left">Amount</th>
           <th align="left">Currency</th>
@@ -663,7 +661,7 @@ def view_admin_expenses():
           <th align="left">Created</th>
           <th align="center">Actions</th>
         </tr>
-        {rows if rows else "<tr><td colspan='8' style='padding:14px'>Nu exista cereri HR_APPROVED.</td></tr>"}
+        {rows if rows else "<tr><td colspan='7' style='padding:14px'>Nu exista cereri HR_APPROVED.</td></tr>"}
       </table>
 
       <br>
@@ -759,13 +757,20 @@ def admin_reject_expense(expense_id):
     return redirect(url_for("view_admin_expenses"))
 
 
-# Angajat - Concedii lista
 @app.route("/leave/my")
 def my_leaves():
-    if "access_token" not in session:
+    # Detectare Token (Postman vs Browser)
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
+
+    if not token:
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except:
+        return jsonify({"error": "Invalid token"}), 401
+        
     if not has_role(userinfo, "Angajat"):
         return "Access denied", 403
 
@@ -776,6 +781,14 @@ def my_leaves():
         .all()
     )
 
+    # Răspuns JSON pentru Postman
+    if auth_header:
+        return jsonify([{
+            "id": l.id, "start": str(l.start_date), "end": str(l.end_date),
+            "reason": l.reason, "status": l.status.value
+        } for l in items])
+
+    # HTML-UL TĂU ORIGINAL (Neschimbat)
     rows = ""
     for l in items:
         rows += f"""
@@ -789,27 +802,18 @@ def my_leaves():
           <td>{l.created_at.strftime('%Y-%m-%d')}</td>
         </tr>
         """
-
     return f"""
     <html><body style="font-family:Arial;background:#f4f6f8">
     <div style="background:white;width:1000px;max-width:95vw;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
       <h2>Concediile mele</h2>
-
       <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse">
         <tr style="background:#0066ff;color:white">
-          <th align="left">ID</th>
-          <th align="left">Start</th>
-          <th align="left">End</th>
-          <th align="left">Reason</th>
-          <th align="left">Status</th>
-          <th align="left">Approved by</th>
-          <th align="left">Created</th>
+          <th align="left">ID</th><th align="left">Start</th><th align="left">End</th>
+          <th align="left">Reason</th><th align="left">Status</th><th align="left">Approved by</th><th align="left">Created</th>
         </tr>
         {rows if rows else "<tr><td colspan='7' style='padding:14px'>Nu exista cereri de concediu.</td></tr>"}
       </table>
-
-      <br>
-      <a href="/"><button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Back</button></a>
+      <br><a href="/"><button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Back</button></a>
     </div>
     </body></html>
     """
@@ -818,12 +822,41 @@ def my_leaves():
 # Toti - Vezi profilul utilizatorului
 @app.route("/profile")
 def profile():
-    if "access_token" not in session:
+    # 1. Extragerea token-ului (Hibrid: Header pentru Postman, Session pentru Browser)
+    auth_header = request.headers.get("Authorization")
+    token = None
+
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    else:
+        token = session.get("access_token")
+
+    # 2. Verificăm dacă există un token; dacă nu, redirecționăm sau dăm eroare 401
+    if not token:
+        if auth_header:
+            return jsonify({"error": "Unauthorized", "message": "Missing token"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
-    roles = visible_roles_from_token(userinfo)
+    try:
+        # 3. Decodarea token-ului și obținerea rolurilor
+        userinfo = decode_token(token)
+        roles = visible_roles_from_token(userinfo)
 
+        # 4. Dacă cererea vine din Postman (are Auth Header), returnăm JSON
+        if auth_header:
+            return jsonify({
+                "username": userinfo.get("preferred_username"),
+                "email": userinfo.get("email"),
+                "first_name": userinfo.get("given_name"),
+                "last_name": userinfo.get("family_name"),
+                "roles": roles
+            })
+
+    except Exception as e:
+        logger.error(f"Eroare la procesarea profilului: {e}")
+        return jsonify({"error": "Invalid token"}), 401
+
+    # 5. Dacă cererea este din Browser, returnăm interfața HTML originală
     return f"""
     <html><body style="font-family:Arial;background:#f4f6f8">
     <div style="background:white;width:650px;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
@@ -841,28 +874,49 @@ def profile():
     """
 
 
+
 # Leave Request - Angajat
 @app.route("/leave/request", methods=["GET", "POST"])
 def leave_request():
-    if "access_token" not in session:
-        return redirect(url_for("home"))
+    # --- LOGICA DE TOKEN (Adaugă asta) ---
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
-    userinfo = decode_token(session["access_token"])
+    if not token:
+        if auth_header: return jsonify({"error": "Unauthorized"}), 401
+        return redirect(url_for("home"))
+    # -------------------------------------
+
+    userinfo = decode_token(token)
     if not has_role(userinfo, "Angajat"):
         return "Access denied", 403
 
     if request.method == "POST":
-        leave = LeaveRequest(
-            user_id=userinfo["sub"],
-            start_date=datetime.strptime(request.form["start_date"], "%Y-%m-%d").date(),
-            end_date=datetime.strptime(request.form["end_date"], "%Y-%m-%d").date(),
-            reason=request.form.get("reason"),
-            status=LeaveStatus.PENDING
-        )
-        db.session.add(leave)
-        db.session.commit()
-        return redirect(url_for("home"))
+        # Acceptăm și JSON (Postman) și Form (Browser)
+        data = request.get_json() if request.is_json else request.form
+        
+        start_date_str = data.get("start_date")
+        end_date_str = data.get("end_date")
+        reason = data.get("reason", "")
 
+        try:
+            new_request = LeaveRequest(
+                user_id=userinfo["sub"],
+                start_date=datetime.strptime(start_date_str, '%Y-%m-%d'),
+                end_date=datetime.strptime(end_date_str, '%Y-%m-%d'),
+                reason=reason,
+                status=LeaveStatus.PENDING
+            )
+            db.session.add(new_request)
+            db.session.commit()
+            
+            if auth_header:
+                return jsonify({"status": "success", "message": "Leave request created", "id": new_request.id}), 201
+            return redirect(url_for("home"))
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
+
+    # Rămâne return-ul tău cu HTML pentru GET
     return """
     <html><body style="font-family:Arial;background:#f4f6f8">
     <div style="background:white;width:480px;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
@@ -879,51 +933,66 @@ def leave_request():
     """
     
 
-# Expense Request - Angajat
 @app.route("/expenses/request", methods=["GET", "POST"])
 def expense_request():
-    if "access_token" not in session:
+    # 1. LOGICA DE TOKEN (HIBRID: HEADER + SESSION)
+    auth_header = request.headers.get("Authorization")
+    token = None
+    
+    # Debug în terminal să vedem ce primește serverul
+    print(f"DEBUG: Auth Header present: {bool(auth_header)}")
+
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        print("DEBUG: Token preluat din Header (Postman)")
+    else:
+        token = session.get("access_token")
+        if token: print("DEBUG: Token preluat din Sesiune (Browser)")
+
+    # DACĂ TOT NU AVEM TOKEN
+    if not token:
+        print("DEBUG: Nu s-a gasit niciun token! Redirect la home/login.")
+        # Dacă e cerere de tip API, returnăm JSON, nu redirect
+        if request.is_json or auth_header:
+            return jsonify({"error": "Unauthorized", "message": "Missing token"}), 401
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except Exception as e:
+        print(f"DEBUG: Eroare decodare token: {e}")
+        return jsonify({"error": "Invalid token"}), 401
+
     if not has_role(userinfo, "Angajat"):
         return "Access denied", 403
 
     user_id = userinfo["sub"]
 
     if request.method == "POST":
-        # MAXIM DE 5 ORI PE ZI DECONT, SA NU FIE ABUZIV
+        # 2. RATE LIMIT (REDIS)
         if not check_expense_rate_limit(user_id):
-            return """
-            <html><body style="font-family:Arial;background:#f4f6f8">
-            <div style="background:white;width:480px;margin:60px auto;padding:30px;
-                        border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1);
-                        text-align:center">
-              <h3 style="color:#cc0000">Limita depasita</h3>
-              <p>Ai atins limita de <strong>5 cereri de decont pe zi</strong>.</p>
-              <p>Incearca din nou maine.</p>
-              <br>
-              <a href="/"><button style="background:#0066ff;color:white;border:none;
-              padding:10px 14px;border-radius:8px;cursor:pointer">
-                Inapoi
-              </button></a>
-            </div>
-            </body></html>
-            """, 429
+            print(f"DEBUG: Rate limit atins pentru user {user_id}")
+            if auth_header or request.is_json:
+                return jsonify({"error": "Rate limit exceeded", "limit": 5}), 429
+            return "Limita depasita (5/zi)", 429
 
-        # Date din formular
-        amount_str = request.form.get("amount", "").strip()
-        currency = (request.form.get("currency") or "ron").strip().lower()
-        description = request.form.get("description")
+        # 3. COLECTARE DATE (Adaptat pentru Postman JSON & Formular)
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form
+
+        amount_str = data.get("amount", "0")
+        currency = data.get("currency", "ron").strip().lower()
+        description = data.get("description", "")
 
         try:
             amount = float(amount_str)
-            if amount <= 0:
-                return "Suma invalida", 400
+            if amount <= 0: return jsonify({"error": "Suma invalida"}), 400
         except ValueError:
-            return "Suma invalida", 400
+            return jsonify({"error": "Suma invalida"}), 400
 
-        # Creez cererea
+        # 4. SALVARE ÎN DB
         exp = ExpenseClaim(
             user_id=user_id,
             amount=amount,
@@ -931,58 +1000,45 @@ def expense_request():
             description=description,
             status=ExpenseStatus.PENDING,
         )
-
         db.session.add(exp)
         db.session.commit()
+        print(f"DEBUG: Decont salvat cu succes. ID: {exp.id}")
 
+        # 5. RĂSPUNS
+        if auth_header or request.is_json:
+            return jsonify({"status": "success", "id": exp.id}), 201
         return redirect(url_for("my_expenses"))
     
+    # GET method - afisare formular
     return """
     <html><body style="font-family:Arial;background:#f4f6f8">
-    <div style="background:white;width:480px;margin:60px auto;padding:30px;
-                border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
+    <div style="background:white;width:480px;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
       <h2>Cerere de decont</h2>
-
       <form method="post">
-        Suma (ex: 123.45):<br>
-        <input type="number" name="amount" min="0.01" step="0.01" required
-               style="padding:8px;width:100%"><br><br>
-
-        Moneda:<br>
-        <input type="text" name="currency" value="ron" required
-               style="padding:8px;width:100%"><br><br>
-
-        Descriere:<br>
-        <textarea name="description"
-                  style="padding:8px;width:100%;height:90px"></textarea><br><br>
-
-        <button type="submit"
-                style="background:#17a2b8;color:white;border:none;
-                       padding:10px 14px;border-radius:8px;cursor:pointer">
-          Trimite
-        </button>
-
-        <a href="/" style="margin-left:10px">
-          <button type="button"
-                  style="background:#0066ff;color:white;border:none;
-                         padding:10px 14px;border-radius:8px;cursor:pointer">
-            Back
-          </button>
-        </a>
+        Suma: <input type="number" name="amount" step="0.01" required style="width:100%"><br><br>
+        Moneda: <input type="text" name="currency" value="ron" required style="width:100%"><br><br>
+        Descriere: <textarea name="description" style="width:100%;height:80px"></textarea><br><br>
+        <button type="submit" style="background:#17a2b8;color:white;border:none;padding:10px 14px;border-radius:8px">Trimite</button>
       </form>
     </div>
     </body></html>
     """
 
-
-
 # Deconturi - Angajat
 @app.route("/expenses/my")
 def my_expenses():
-    if "access_token" not in session:
+    # Detectare Token
+    auth_header = request.headers.get("Authorization")
+    token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
+
+    if not token:
         return redirect(url_for("home"))
 
-    userinfo = decode_token(session["access_token"])
+    try:
+        userinfo = decode_token(token)
+    except:
+        return jsonify({"error": "Invalid token"}), 401
+
     if not has_role(userinfo, "Angajat"):
         return "Access denied", 403
 
@@ -991,11 +1047,17 @@ def my_expenses():
              .order_by(ExpenseClaim.created_at.desc())
              .all())
 
+    # Răspuns JSON pentru Postman
+    if auth_header:
+        return jsonify([{
+            "id": e.id, "amount": float(e.amount), "currency": e.currency,
+            "description": e.description, "status": e.status.value
+        } for e in items])
+
+    # HTML-UL TĂU ORIGINAL (Neschimbat)
     rows = ""
     for e in items:
-        # Am avut probleme, standard currency nu in cents
         amount_display = f"{e.amount:.2f}"
-
         rows += f"""
         <tr>
           <td>{e.id}</td>
@@ -1006,26 +1068,18 @@ def my_expenses():
           <td>{e.created_at.strftime('%Y-%m-%d')}</td>
         </tr>
         """
-
     return f"""
     <html><body style="font-family:Arial;background:#f4f6f8">
     <div style="background:white;width:900px;max-width:95vw;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
       <h2>Deconturile mele</h2>
-
       <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse">
         <tr style="background:#0066ff;color:white">
-          <th align="left">ID</th>
-          <th align="left">Amount</th>
-          <th align="left">Currency</th>
-          <th align="left">Description</th>
-          <th align="left">Status</th>
-          <th align="left">Created</th>
+          <th align="left">ID</th><th align="left">Amount</th><th align="left">Currency</th>
+          <th align="left">Description</th><th align="left">Status</th><th align="left">Created</th>
         </tr>
         {rows if rows else "<tr><td colspan='6' style='padding:14px'>Nu exista deconturi.</td></tr>"}
       </table>
-
-      <br>
-      <a href="/"><button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Back</button></a>
+      <br><a href="/"><button style="background:#0066ff;color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer">Back</button></a>
     </div>
     </body></html>
     """
@@ -1277,7 +1331,7 @@ def list_users():
             <td style="border-bottom:1px solid #eee">
                 <div style="margin:0; display:flex; align-items:center; gap:5px">
                     <div style="display:flex; flex-wrap:wrap; gap:2px;">{checkboxes}</div>
-                    <button onclick="updateUserRoles('{u.keycloak_id}')" style="background:#007bff; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:0.75em">Save (PUT)</button>
+                    <button onclick="updateUserRoles('{u.keycloak_id}')" style="background:#007bff; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:0.75em">Save</button>
                 </div>
             </td>
             """
@@ -1285,7 +1339,7 @@ def list_users():
             # Folosim un button cu onclick care apeleaza functia de DELETE
             delete_button = f"""
             <td style="border-bottom:1px solid #eee; text-align:center;">
-                <button onclick="deleteUser('{u.keycloak_id}', '{u.username}')" style="background:#dc3545; color:white; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; font-size:0.8em">🗑️ (DELETE)</button>
+                <button onclick="deleteUser('{u.keycloak_id}', '{u.username}')" style="background:#dc3545; color:white; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; font-size:0.8em">DELETE</button>
             </td>
             """
 
@@ -1301,7 +1355,7 @@ def list_users():
         </tr>
         """
 
-    admin_headers = '<th align="left">Modifica Roluri (PUT)</th><th align="center">Actiuni (DELETE)</th>' if user_is_admin else ""
+    admin_headers = '<th align="left">Modifica Roluri</th><th align="center">Actiuni</th>' if user_is_admin else ""
 
     return f"""
     <html>
@@ -1376,7 +1430,7 @@ def list_users():
                     <th align="left">Email</th>
                     <th align="left">Prenume</th>
                     <th align="left">Nume</th>
-                    <th align="left">Roluri DB</th>
+                    <th align="left">Roluri</th>
                     {admin_headers}
                 </tr>
             </thead>
