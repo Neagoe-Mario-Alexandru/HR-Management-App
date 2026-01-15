@@ -40,7 +40,7 @@ def send_email_worker(to_email, subject, body):
                 return False
                 
             server.send_message(msg)
-            print(f" [v] Email trimis cu succes către {to_email}")
+            print(f" [v] Email trimis cu succes catre {to_email}")
             return True
     except Exception as e:
         print(f" [!] Error sending email: {e}")
@@ -57,14 +57,14 @@ def callback(ch, method, properties, body):
         # Confirmare mesaj
         ch.basic_ack(delivery_tag=method.delivery_tag)
     else:
-        print(" [!] Trimitere eșuată. Mesajul rămâne în coadă.")
+        print(" [!] Trimitere esuata. Mesajul ramane în coada.")
         # Incearca iar
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         # Sleep sa nu am loop insane
         time.sleep(5)
 
 # Setup RabbitMQ
-print(' [*] Se conectează la RabbitMQ...')
+print(' [*] Se conecteaza la RabbitMQ...')
 connected = False
 while not connected:
     try:

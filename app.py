@@ -1340,7 +1340,7 @@ def admin_create_user():
     last_name = data.get("last_name")
 
     try:
-        # Creare utilizator în Keycloak
+        # Creare utilizator an Keycloak
         admin_kc = get_admin_client()
         
         # Structura API Keycloak

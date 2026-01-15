@@ -1,6 +1,8 @@
 version: "3.8"
 
 services:
+
+  # DATABASES
   keycloak-db:
     image: postgres:15
     environment:
@@ -11,6 +13,10 @@ services:
       - keycloak-data:/var/lib/postgresql/data
     networks:
       - frontend-net
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
 
   profile-db:
     image: postgres:15
@@ -23,7 +29,13 @@ services:
     networks:
       - backend-net
       - worker-net
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
 
+
+  # INFRASTRUCTURE
   rabbitmq:
     image: rabbitmq:3-management
     ports:
@@ -32,15 +44,26 @@ services:
     networks:
       - backend-net
       - worker-net
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
 
   redis:
     image: redis:7
     networks:
       - backend-net
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
 
+  # KEYCLOAK (BOOTSTRAP)
   keycloak:
     image: quay.io/keycloak/keycloak:24.0
-    command: ["start-dev"]
+    command:
+      - start-dev
+      - --import-realm
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
@@ -48,13 +71,20 @@ services:
       KC_DB_PASSWORD: keycloak
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak/realm-proiect-scd.json:/opt/keycloak/data/import/realm.json
     ports:
       - "8080:8080"
     networks:
       - frontend-net
     depends_on:
       - keycloak-db
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
 
+  # AUTH / API SERVICE
   auth-service:
     build: .
     image: auth-service:latest
@@ -63,28 +93,43 @@ services:
     networks:
       - frontend-net
       - backend-net
+      - worker-net
     depends_on:
       - keycloak
       - profile-db
       - rabbitmq
       - redis
+    secrets:
+      - gmail_app_pass
     environment:
       IN_DOCKER: "1"
+      PYTHONUNBUFFERED: "1"
+
       KEYCLOAK_URL: "http://keycloak:8080"
       KEYCLOAK_REALM: "proiect-scd"
       KEYCLOAK_CLIENT_ID: "backend-scd"
-      KEYCLOAK_SECRET: "4ADOvx6B7aRogJqzAbS3Qq8mQe4fTDrQ"
+      KEYCLOAK_SECRET: "CHANGE_ME"
+
       SMTP_HOST: "smtp.gmail.com"
       SMTP_PORT: "587"
       SMTP_USE_TLS: "1"
       SMTP_USER: "marioalexn@gmail.com"
-      SMTP_PASS: "parola_ta_aici" 
+      SMTP_PASS_FILE: "/run/secrets/gmail_app_pass"
       SMTP_FROM: "Sistem Concedii <marioalexn@gmail.com>"
+
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       EXPENSES_EXCHANGE: "expenses"
       EXPENSES_ROUTING_KEY: "expense.requested"
-      REDIS_URL: "redis://redis:6379/0"
 
+      REDIS_URL: "redis://redis:6379/0"
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
+
+  # EXPENSE WORKER
   expense-worker:
     build: .
     image: expense-worker:latest
@@ -96,24 +141,71 @@ services:
       - rabbitmq
     environment:
       IN_DOCKER: "1"
+
+      DB_HOST: "profile-db"
       DB_USER: "profile"
       DB_PASS: "profile"
       DB_NAME: "profile"
+
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
       EXPENSES_EXCHANGE: "expenses"
       EXPENSES_QUEUE: "expenses.process"
       EXPENSES_BIND_KEY: "expense.requested"
+
       NOTIFY_EXCHANGE: "notifications"
       NOTIFY_ROUTING_KEY: "notify.expense"
-      STRIPE_SECRET_KEY: "sk_test_51SpRkvChzYFGZaU9sN9XCLCOukgVixOHxHBzPWFx6G8clm8sddJ6fSIcvvKB2plRxV6pbRiwRPXNHMYgms5533Sc00NJpWp3e6"
     deploy:
       replicas: 2
+      placement:
+        constraints:
+          - node.role == manager
 
+  # MAIL WORKER
+  mail-worker:
+    image: auth-service:latest
+    command: ["python", "-u", "mail_worker.py"]
+    networks:
+      - backend-net
+      - worker-net
+    depends_on:
+      - rabbitmq
+    secrets:
+      - gmail_app_pass
+    environment:
+      IN_DOCKER: "1"
+      PYTHONUNBUFFERED: "1"
+
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      EMAIL_EXCHANGE: "email_exchange"
+      EMAIL_QUEUE: "email_queue"
+      EMAIL_BIND_KEY: "email.send"
+
+      SMTP_HOST: "smtp.gmail.com"
+      SMTP_PORT: "587"
+      SMTP_USE_TLS: "1"
+      SMTP_USER: "marioalexn@gmail.com"
+      SMTP_PASS_FILE: "/run/secrets/gmail_app_pass"
+      SMTP_FROM: "Sistem Concedii <marioalexn@gmail.com>"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+# NETWORKS
 networks:
   frontend-net:
+    driver: overlay
   backend-net:
+    driver: overlay
   worker-net:
+    driver: overlay
 
+# VOLUMES
 volumes:
   keycloak-data:
   profile-data:
+
+# SECRETS
+secrets:
+  gmail_app_pass:
+    external: true

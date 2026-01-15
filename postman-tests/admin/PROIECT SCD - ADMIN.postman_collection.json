@@ -1,0 +1,419 @@
+{
+	"info": {
+		"_postman_id": "e16ece3e-039f-41c1-8137-c1b3147258d3",
+		"name": "PROIECT SCD - ADMIN",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "40824244",
+		"_collection_link": "https://scd999.postman.co/workspace/SCD-PROIECT~e2eb423a-8213-45ee-8a67-54fc1ddd7866/collection/40824244-e16ece3e-039f-41c1-8137-c1b3147258d3?action=share&source=collection_link&creator=40824244"
+	},
+	"item": [
+		{
+			"name": "Access Token",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"if (pm.response.code === 200) {",
+							"    var jsonData = pm.response.json();",
+							"    pm.environment.set(\"access_token\", jsonData.access_token);",
+							"    console.log(\"✅ Token salvat cu succes!\");",
+							"}"
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "noauth"
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "grant_type",
+							"value": "password",
+							"type": "text"
+						},
+						{
+							"key": "client_id",
+							"value": "backend-scd",
+							"type": "text"
+						},
+						{
+							"key": "client_secret",
+							"value": "4ADOvx6B7aRogJqzAbS3Qq8mQe4fTDrQ",
+							"type": "text"
+						},
+						{
+							"key": "username",
+							"value": "hr1",
+							"type": "text"
+						},
+						{
+							"key": "password",
+							"value": "hr1",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8080/realms/proiect-scd/protocol/openid-connect/token",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8080",
+					"path": [
+						"realms",
+						"proiect-scd",
+						"protocol",
+						"openid-connect",
+						"token"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Profile",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/profile",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"profile"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "See Expenses from Anagajati",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/expenses/admin",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"expenses",
+						"admin"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Approve an Expense",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/expenses/18/admin/approve",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"expenses",
+						"18",
+						"admin",
+						"approve"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Reject an Expense",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/expenses/19/admin/reject",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"expenses",
+						"19",
+						"admin",
+						"reject"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "See All Users",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/users",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"users"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "See All Leaves",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/leave/all",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"leave",
+						"all"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Approve a Leave",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/leave/8/approve",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"leave",
+						"8",
+						"approve"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Reject a Leave",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/leave/7/reject",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"leave",
+						"7",
+						"reject"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Update User Role",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "PUT",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"roles\": [\"Angajat\"]\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/admin/user/379668b2-ad8d-4337-ba61-4aa26bf6a93e",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"admin",
+						"user",
+						"379668b2-ad8d-4337-ba61-4aa26bf6a93e"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Delete User",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "DELETE",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/admin/user/379668b2-ad8d-4337-ba61-4aa26bf6a93e",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"admin",
+						"user",
+						"379668b2-ad8d-4337-ba61-4aa26bf6a93e"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Create User",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"username\": \"mario\",\n    \"email\": \"alexandru.neagoe1912@gmail.com\",\n    \"first_name\": \"Mario\",\n    \"last_name\": \"Neagoe\",\n    \"password\": \"mario\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/admin/create-user",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"admin",
+						"create-user"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}
