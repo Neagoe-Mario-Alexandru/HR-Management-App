@@ -76,7 +76,7 @@ services:
     networks:
       - frontend-net
       - backend-net
-      - worker-net # Am adaugat worker-net pentru a putea publica mesaje in RabbitMQ
+      - worker-net
     depends_on:
       - keycloak
       - profile-db
@@ -86,7 +86,7 @@ services:
       - gmail_app_pass_v3
     environment:
       IN_DOCKER: "1"
-      PYTHONUNBUFFERED: "1" # Fortam logurile sa apara instant
+      PYTHONUNBUFFERED: "1"
       KEYCLOAK_URL: "http://keycloak:8080"
       KEYCLOAK_REALM: "proiect-scd"
       KEYCLOAK_CLIENT_ID: "backend-scd"
@@ -138,8 +138,8 @@ services:
           - node.role == manager
 
   mail-worker:
-    image: auth-service:latest # Foloseste aceeasi imagine ca auth-service
-    command: ["python", "-u", "mail_worker.py"] # -u pentru loguri in timp real
+    image: auth-service:latest
+    command: ["python", "-u", "mail_worker.py"]
     networks:
       - worker-net
       - backend-net

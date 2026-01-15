@@ -11,10 +11,8 @@ class UserProfile(db.Model):
     keycloak_id = db.Column(db.String(255), unique=True, nullable=False)
     username = db.Column(db.String(100), nullable=True)
     email = db.Column(db.String(255), nullable=True)
-    # --- ADAUGA ACESTE DOUA COLOANE ---
     first_name = db.Column(db.String(100), nullable=True)
     last_name = db.Column(db.String(100), nullable=True)
-    # ----------------------------------
     role = db.Column(db.String(50), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
@@ -44,7 +42,7 @@ class LeaveRequest(db.Model):
         nullable=False
     )
 
-    approved_by = db.Column(db.String(255), nullable=True)  # HR keycloak sub
+    approved_by = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     def to_dict(self):

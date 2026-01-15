@@ -479,7 +479,7 @@ def home():
 # Deconturi - HR
 @app.route("/expenses/hr")
 def view_hr_expenses():
-    # --- LOGICA HIBRIDA TOKEN (Postman + Browser) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
@@ -491,7 +491,6 @@ def view_hr_expenses():
         userinfo = decode_token(token)
     except:
         return jsonify({"error": "Invalid token"}), 401
-    # -----------------------------------------------
 
     if not (is_hr(userinfo) or is_admin(userinfo)):
         return "Access denied", 403
@@ -501,7 +500,7 @@ def view_hr_expenses():
              .order_by(ExpenseClaim.created_at.desc())
              .all())
 
-    # --- RASPUNS JSON PENTRU POSTMAN ---
+    # JSON pt Postman
     if auth_header:
         return jsonify([{
             "id": e.id,
@@ -513,7 +512,6 @@ def view_hr_expenses():
             "created_at": e.created_at.strftime('%Y-%m-%d')
         } for e in items])
 
-    # --- HTML-UL TAU ORIGINAL (NESCHIMBAT) ---
     rows = ""
     for e in items:
         employee_name = username_for_sub(e.user_id)
@@ -570,7 +568,7 @@ def view_hr_expenses():
 # HR - Approve Decont
 @app.route("/expenses/<int:expense_id>/hr/approve", methods=["POST"])
 def hr_approve_expense(expense_id):
-    # --- LOGICA HIBRIDA TOKEN ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
@@ -582,7 +580,6 @@ def hr_approve_expense(expense_id):
         userinfo = decode_token(token)
     except:
         return jsonify({"error": "Invalid token"}), 401
-    # -----------------------------
 
     if not (is_hr(userinfo) or is_admin(userinfo)):
         return "Access denied", 403
@@ -601,7 +598,6 @@ def hr_approve_expense(expense_id):
     
     logger.info(f"HR {userinfo.get('preferred_username')} a aprobat decontul ID {expense_id}")
 
-    # Răspuns pentru Postman
     if auth_header:
         return jsonify({
             "status": "success",
@@ -616,7 +612,7 @@ def hr_approve_expense(expense_id):
 # HR - Reject Decont
 @app.route("/expenses/<int:expense_id>/hr/reject", methods=["POST"])
 def hr_reject_expense(expense_id):
-    # --- LOGICA HIBRIDA TOKEN (Postman + Browser) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
@@ -628,14 +624,12 @@ def hr_reject_expense(expense_id):
         userinfo = decode_token(token)
     except:
         return jsonify({"error": "Invalid token"}), 401
-    # -----------------------------------------------
 
     if not (is_hr(userinfo) or is_admin(userinfo)):
         return "Access denied", 403
 
     exp = ExpenseClaim.query.get_or_404(expense_id)
     
-    # Verificăm dacă este în starea corectă (PENDING) pentru a fi respins de HR
     if exp.status != ExpenseStatus.PENDING:
         if auth_header:
             return jsonify({"error": f"Expense already processed, status is {exp.status.value}"}), 409
@@ -647,7 +641,7 @@ def hr_reject_expense(expense_id):
     exp.approved_by = userinfo["sub"]
     db.session.commit()
     
-    # Notificare prin Email via RabbitMQ
+    # Notificare prin email
     emp_email = email_for_sub(exp.user_id)
     subject, body = build_expense_email(ExpenseStatus.REJECTED, exp)
 
@@ -662,7 +656,7 @@ def hr_reject_expense(expense_id):
     except Exception as e:
         logger.error("Expense HR reject email fail: %s", e)
 
-    # Răspuns pentru Postman
+    # JSON pt Postman
     if auth_header:
         return jsonify({
             "status": "rejected",
@@ -670,7 +664,6 @@ def hr_reject_expense(expense_id):
             "notified_user": emp_email
         }), 200
 
-    # Redirect pentru Browser
     return redirect(url_for("view_hr_expenses"))
 
 
@@ -680,7 +673,7 @@ def hr_reject_expense(expense_id):
 # Admin - Vezi Deconturi
 @app.route("/expenses/admin")
 def view_admin_expenses():
-    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = None
     if auth_header and auth_header.startswith("Bearer "):
@@ -696,7 +689,6 @@ def view_admin_expenses():
         userinfo = decode_token(token)
     except Exception:
         return jsonify({"error": "Invalid token"}), 401
-    # -----------------------------------------------
 
     if not is_admin(userinfo):
         return "Access denied", 403
@@ -707,7 +699,7 @@ def view_admin_expenses():
              .order_by(ExpenseClaim.created_at.desc())
              .all())
 
-    # --- RĂSPUNS JSON PENTRU POSTMAN ---
+    # JSON pt Postman
     if auth_header:
         return jsonify([{
             "id": e.id,
@@ -719,7 +711,6 @@ def view_admin_expenses():
             "created_at": e.created_at.strftime('%Y-%m-%d')
         } for e in items])
 
-    # --- RĂSPUNS HTML (Design-ul tău original) ---
     rows = ""
     for e in items:
         employee_name = username_for_sub(e.user_id)
@@ -772,10 +763,10 @@ def view_admin_expenses():
     </body></html>
     """
 
-# Admin - Approve la Decont (Final Step -> RabbitMQ)
+# Admin - Approve la Decont
 @app.route("/expenses/<int:expense_id>/admin/approve", methods=["POST"])
 def admin_approve_expense(expense_id):
-    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
@@ -787,7 +778,6 @@ def admin_approve_expense(expense_id):
         userinfo = decode_token(token)
     except Exception:
         return jsonify({"error": "Invalid token"}), 401
-    # -----------------------------------------------
 
     if not is_admin(userinfo):
         return "Access denied", 403
@@ -799,12 +789,10 @@ def admin_approve_expense(expense_id):
             return jsonify({"error": error_msg}), 409
         return error_msg, 409
 
-    # 1. Marcat in db ca fiind pus in coada (QUEUED)
     exp.status = ExpenseStatus.QUEUED
     exp.approved_by = userinfo["sub"]
     db.session.commit()
 
-    # 2. Notificare Email (via RabbitMQ)
     emp_email = email_for_sub(exp.user_id)
     subject, body = build_expense_email(ExpenseStatus.QUEUED, exp)
 
@@ -818,7 +806,7 @@ def admin_approve_expense(expense_id):
     except Exception as e:
         logger.error("Expense admin approve email failed: %s", e)
 
-    # 3. Publish mesajul de PLATA in RabbitMQ
+    # Public mesajul
     trace_id = str(uuid.uuid4())
     msg = {
         "event": "expense.requested",
@@ -836,7 +824,7 @@ def admin_approve_expense(expense_id):
     rabbit_publish(EXPENSES_EXCHANGE, EXPENSES_ROUTING_KEY, msg)
     logger.info(f"Admin a aprobat decontul {expense_id}. Mesaj trimis spre Expense Worker cu trace_id: {trace_id}")
 
-    # --- RASPUNS DIFERENTIAT ---
+    # JSON pt Postman
     if auth_header:
         return jsonify({
             "status": "success",
@@ -852,7 +840,7 @@ def admin_approve_expense(expense_id):
 # Admin - Reject Decont
 @app.route("/expenses/<int:expense_id>/admin/reject", methods=["POST"])
 def admin_reject_expense(expense_id):
-    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
@@ -864,27 +852,26 @@ def admin_reject_expense(expense_id):
         userinfo = decode_token(token)
     except Exception:
         return jsonify({"error": "Invalid token"}), 401
-    # -----------------------------------------------
 
     if not is_admin(userinfo):
         return "Access denied", 403
 
     exp = ExpenseClaim.query.get_or_404(expense_id)
     
-    # Admin-ul poate respinge doar deconturile care sunt în starea HR_APPROVED
+    # Admin poate sa respinga doar daca HR a aprobat deja
     if exp.status != ExpenseStatus.HR_APPROVED:
         error_msg = f"Expense {expense_id} is in status {exp.status.value}, cannot be rejected by Admin"
         if auth_header:
             return jsonify({"error": error_msg}), 409
         return error_msg, 409
 
-    # Actualizăm statusul în baza de date
+    # Actualizare status in baza de date
     exp.status = ExpenseStatus.REJECTED
     exp.failure_reason = "Rejected by an Admin"
-    exp.approved_by = userinfo["sub"] # Salvăm cine a luat decizia finală
+    exp.approved_by = userinfo["sub"]
     db.session.commit()
     
-    # Notificare Email prin RabbitMQ
+    # Notificare prin email
     emp_email = email_for_sub(exp.user_id)
     subject, body = build_expense_email(ExpenseStatus.REJECTED, exp)
 
@@ -899,7 +886,7 @@ def admin_reject_expense(expense_id):
     except Exception as e:
         logger.error("Expense admin reject email fail: %s", e)
 
-    # Răspuns diferențiat
+    # JSON pt Postman
     if auth_header:
         return jsonify({
             "status": "rejected",
@@ -912,7 +899,7 @@ def admin_reject_expense(expense_id):
 
 @app.route("/leave/my")
 def my_leaves():
-    # Detectare Token (Postman vs Browser)
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
@@ -934,14 +921,13 @@ def my_leaves():
         .all()
     )
 
-    # Răspuns JSON pentru Postman
+    # JSON pt Postman
     if auth_header:
         return jsonify([{
             "id": l.id, "start": str(l.start_date), "end": str(l.end_date),
             "reason": l.reason, "status": l.status.value
         } for l in items])
 
-    # HTML-UL TĂU ORIGINAL (Neschimbat)
     rows = ""
     for l in items:
         rows += f"""
@@ -972,10 +958,10 @@ def my_leaves():
     """
 
 
-# Toti - Vezi profilul utilizatorului
+# Toti - Vezi profilul tau
 @app.route("/profile")
 def profile():
-    # 1. Extragerea token-ului (Hibrid: Header pentru Postman, Session pentru Browser)
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = None
 
@@ -983,19 +969,18 @@ def profile():
         token = auth_header.split(" ")[1]
     else:
         token = session.get("access_token")
-
-    # 2. Verificăm dacă există un token; dacă nu, redirecționăm sau dăm eroare 401
+        
     if not token:
         if auth_header:
             return jsonify({"error": "Unauthorized", "message": "Missing token"}), 401
         return redirect(url_for("home"))
 
     try:
-        # 3. Decodarea token-ului și obținerea rolurilor
+
         userinfo = decode_token(token)
         roles = visible_roles_from_token(userinfo)
 
-        # 4. Dacă cererea vine din Postman (are Auth Header), returnăm JSON
+
         if auth_header:
             return jsonify({
                 "username": userinfo.get("preferred_username"),
@@ -1009,7 +994,6 @@ def profile():
         logger.error(f"Eroare la procesarea profilului: {e}")
         return jsonify({"error": "Invalid token"}), 401
 
-    # 5. Dacă cererea este din Browser, returnăm interfața HTML originală
     return f"""
     <html><body style="font-family:Arial;background:#f4f6f8">
     <div style="background:white;width:650px;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
@@ -1027,25 +1011,22 @@ def profile():
     """
 
 
-
 # Leave Request - Angajat
 @app.route("/leave/request", methods=["GET", "POST"])
 def leave_request():
-    # --- LOGICA DE TOKEN (Adaugă asta) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
     if not token:
         if auth_header: return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("home"))
-    # -------------------------------------
 
     userinfo = decode_token(token)
     if not has_role(userinfo, "Angajat"):
         return "Access denied", 403
 
     if request.method == "POST":
-        # Acceptăm și JSON (Postman) și Form (Browser)
         data = request.get_json() if request.is_json else request.form
         
         start_date_str = data.get("start_date")
@@ -1069,7 +1050,6 @@ def leave_request():
         except Exception as e:
             return jsonify({"error": str(e)}), 400
 
-    # Rămâne return-ul tău cu HTML pentru GET
     return """
     <html><body style="font-family:Arial;background:#f4f6f8">
     <div style="background:white;width:480px;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
@@ -1088,11 +1068,10 @@ def leave_request():
 
 @app.route("/expenses/request", methods=["GET", "POST"])
 def expense_request():
-    # 1. LOGICA DE TOKEN (HIBRID: HEADER + SESSION)
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = None
     
-    # Debug în terminal să vedem ce primește serverul
     print(f"DEBUG: Auth Header present: {bool(auth_header)}")
 
     if auth_header and auth_header.startswith("Bearer "):
@@ -1102,10 +1081,8 @@ def expense_request():
         token = session.get("access_token")
         if token: print("DEBUG: Token preluat din Sesiune (Browser)")
 
-    # DACĂ TOT NU AVEM TOKEN
     if not token:
         print("DEBUG: Nu s-a gasit niciun token! Redirect la home/login.")
-        # Dacă e cerere de tip API, returnăm JSON, nu redirect
         if request.is_json or auth_header:
             return jsonify({"error": "Unauthorized", "message": "Missing token"}), 401
         return redirect(url_for("home"))
@@ -1122,14 +1099,12 @@ def expense_request():
     user_id = userinfo["sub"]
 
     if request.method == "POST":
-        # 2. RATE LIMIT (REDIS)
         if not check_expense_rate_limit(user_id):
             print(f"DEBUG: Rate limit atins pentru user {user_id}")
             if auth_header or request.is_json:
                 return jsonify({"error": "Rate limit exceeded", "limit": 5}), 429
             return "Limita depasita (5/zi)", 429
 
-        # 3. COLECTARE DATE (Adaptat pentru Postman JSON & Formular)
         if request.is_json:
             data = request.get_json()
         else:
@@ -1145,7 +1120,6 @@ def expense_request():
         except ValueError:
             return jsonify({"error": "Suma invalida"}), 400
 
-        # 4. SALVARE ÎN DB
         exp = ExpenseClaim(
             user_id=user_id,
             amount=amount,
@@ -1157,12 +1131,10 @@ def expense_request():
         db.session.commit()
         print(f"DEBUG: Decont salvat cu succes. ID: {exp.id}")
 
-        # 5. RĂSPUNS
         if auth_header or request.is_json:
             return jsonify({"status": "success", "id": exp.id}), 201
         return redirect(url_for("my_expenses"))
-    
-    # GET method - afisare formular
+
     return """
     <html><body style="font-family:Arial;background:#f4f6f8">
     <div style="background:white;width:480px;margin:60px auto;padding:30px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1)">
@@ -1177,10 +1149,11 @@ def expense_request():
     </body></html>
     """
 
+
 # Deconturi - Angajat
 @app.route("/expenses/my")
 def my_expenses():
-    # Detectare Token
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
@@ -1200,14 +1173,13 @@ def my_expenses():
              .order_by(ExpenseClaim.created_at.desc())
              .all())
 
-    # Răspuns JSON pentru Postman
+    # JSON pt Postman
     if auth_header:
         return jsonify([{
             "id": e.id, "amount": float(e.amount), "currency": e.currency,
             "description": e.description, "status": e.status.value
         } for e in items])
 
-    # HTML-UL TĂU ORIGINAL (Neschimbat)
     rows = ""
     for e in items:
         amount_display = f"{e.amount:.2f}"
@@ -1243,7 +1215,7 @@ def my_expenses():
 # HR – Vede cereri de concediu
 @app.route("/leave/all")
 def view_all_leaves():
-    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = None
     if auth_header and auth_header.startswith("Bearer "):
@@ -1259,14 +1231,13 @@ def view_all_leaves():
         userinfo = decode_token(token)
     except Exception:
         return jsonify({"error": "Invalid token"}), 401
-    # -----------------------------------------------
 
     if not can_manage_leaves(userinfo):
         return "Access denied", 403
 
     leaves = LeaveRequest.query.order_by(LeaveRequest.created_at.desc()).all()
 
-    # --- RĂSPUNS JSON PENTRU POSTMAN ---
+    # JSON pt Postman
     if auth_header:
         return jsonify([{
             "id": l.id,
@@ -1279,7 +1250,6 @@ def view_all_leaves():
             "created_at": l.created_at.strftime('%Y-%m-%d')
         } for l in leaves])
 
-    # --- RĂSPUNS HTML (Design-ul tău original) ---
     rows = ""
     for l in leaves:
         employee_name = username_for_sub(l.user_id)
@@ -1342,7 +1312,7 @@ def view_all_leaves():
 # Admin - Creare Utilizator Nou
 @app.route("/admin/create-user", methods=["POST"])
 def admin_create_user():
-    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
@@ -1354,12 +1324,10 @@ def admin_create_user():
         userinfo = decode_token(token)
     except Exception:
         return jsonify({"error": "Invalid token"}), 401
-    # -----------------------------------------------
 
     if not is_admin(userinfo):
         return "Access denied. Admin only.", 403
 
-    # Detectăm sursa datelor (JSON pentru Postman, Form pentru Browser)
     if request.is_json:
         data = request.get_json()
     else:
@@ -1372,10 +1340,10 @@ def admin_create_user():
     last_name = data.get("last_name")
 
     try:
-        # 1. Creare utilizator în Keycloak
+        # Creare utilizator în Keycloak
         admin_kc = get_admin_client()
         
-        # Structura cerută de API-ul Keycloak
+        # Structura API Keycloak
         new_user_kc = admin_kc.create_user({
             "email": email,
             "username": username,
@@ -1383,20 +1351,19 @@ def admin_create_user():
             "firstName": first_name,
             "lastName": last_name,
             "credentials": [{"value": password, "type": "password", "temporary": False}]
-        }, exist_ok=False) # Aruncă eroare dacă userul există deja
+        }, exist_ok=False)
 
-        # 2. Keycloak returnează ID-ul noului utilizator
-        # Notă: uneori create_user returnează ID-ul, alteori trebuie căutat după username
+        # ID utilizator nou
         new_id = new_user_kc if isinstance(new_user_kc, str) else admin_kc.get_user_id(username)
 
-        # 3. Salvare în baza de date locală (UserProfile)
+        # Salvare in baza de date
         new_user_db = UserProfile(
             keycloak_id=new_id,
             username=username,
             email=email,
             first_name=first_name,
             last_name=last_name,
-            role="Angajat" # Rol default
+            role="Angajat"
         )
         db.session.add(new_user_db)
         db.session.commit()
@@ -1420,10 +1387,10 @@ def admin_create_user():
     return redirect(url_for("list_users"))
         
 
-# Noua rută RESTful pentru resurse de tip User
+# Admin - Manage Users
 @app.route("/admin/user/<user_id>", methods=["PUT", "DELETE"])
 def rest_manage_user(user_id):
-    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
@@ -1438,14 +1405,14 @@ def rest_manage_user(user_id):
     if not is_admin(userinfo):
         return jsonify({"error": "Forbidden. Admin access required."}), 403
 
-    # --- ȘTERGERE (DELETE) ---
+    # Delete user
     if request.method == "DELETE":
         try:
-            # 1. Ștergere din Keycloak (via Admin Client)
+            # Din keycloak
             admin_kc = get_admin_client()
             admin_kc.delete_user(user_id)
             
-            # 2. Ștergere din baza de date locală
+            # Din baza de date
             user_db = UserProfile.query.filter_by(keycloak_id=user_id).first()
             if user_db:
                 username_deleted = user_db.username
@@ -1458,19 +1425,19 @@ def rest_manage_user(user_id):
             logger.error(f"Error deleting user {user_id}: {e}")
             return jsonify({"error": str(e)}), 500
 
-    # --- ACTUALIZARE ROLURI (PUT) ---
+    # Actualizeaza roluri
     if request.method == "PUT":
-        data = request.get_json()  # Așteptăm JSON de la client (JS sau Postman)
+        data = request.get_json()
         if not data:
             return jsonify({"error": "No data provided"}), 400
             
         new_roles_names = data.get("roles", [])
         
         try:
-            # 1. Update roluri în Keycloak
+            # In keycloak
             update_keycloak_user_roles(user_id, new_roles_names)
             
-            # 2. Sincronizare în DB locală
+            # IN baza de date
             u = UserProfile.query.filter_by(keycloak_id=user_id).first()
             if u:
                 u.role = ",".join(new_roles_names)
@@ -1483,10 +1450,10 @@ def rest_manage_user(user_id):
             return jsonify({"error": str(e)}), 500
         
  
-# Admin / HR - Lista Utilizatori (RESTful version)
+# Admin / HR - Lista Utilizatori
 @app.route("/users")
 def list_users():
-    # --- LOGICA HIBRIDA TOKEN (Postman + Browser) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = None
     if auth_header and auth_header.startswith("Bearer "):
@@ -1502,7 +1469,6 @@ def list_users():
         userinfo = decode_token(token)
     except:
         return jsonify({"error": "Invalid token"}), 401
-    # -----------------------------------------------
 
     user_is_admin = is_admin(userinfo)
     user_is_hr = is_hr(userinfo)
@@ -1513,7 +1479,7 @@ def list_users():
     # Toti din db
     users = UserProfile.query.order_by(UserProfile.username.asc()).all()
 
-    # --- RASPUNS JSON PENTRU POSTMAN ---
+    # JSON pt Postman
     if auth_header:
         return jsonify([{
             "id": u.id,
@@ -1525,7 +1491,6 @@ def list_users():
             "roles": u.role.split(",") if u.role else []
         } for u in users])
 
-    # --- RASPUNS HTML PENTRU BROWSER (Codul tau original) ---
     VISIBLE_ROLES = ["Angajat", "HR", "Administrator"]
 
     create_user_form = ""
@@ -1666,7 +1631,7 @@ def list_users():
 # HR – Approve concediu
 @app.route("/leave/<int:leave_id>/approve", methods=["POST"])
 def approve_leave(leave_id):
-    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
@@ -1678,12 +1643,11 @@ def approve_leave(leave_id):
         userinfo = decode_token(token)
     except Exception:
         return jsonify({"error": "Invalid token"}), 401
-    # -----------------------------------------------
 
     if not can_manage_leaves(userinfo):
         return "Access denied", 403
 
-    # Încercăm update-ul direct în DB pentru a evita race conditions
+    # Update direct in baza de date ca sa nu am race conditions
     updated = (
         db.session.query(LeaveRequest)
         .filter(LeaveRequest.id == leave_id, LeaveRequest.status == LeaveStatus.PENDING)
@@ -1703,7 +1667,7 @@ def approve_leave(leave_id):
             return jsonify({"error": error_msg}), 409
         return error_msg, 409
 
-    # Luăm datele pentru a trimite email-ul
+    # Luat date pt email
     leave = LeaveRequest.query.get(leave_id)
     emp_email = email_for_sub(leave.user_id)
     subject, body = build_leave_email(LeaveStatus.APPROVED, leave)
@@ -1719,7 +1683,7 @@ def approve_leave(leave_id):
     except Exception as e:
         logger.error("Email send failed for leave %s: %s", leave_id, e)
 
-    # Răspuns în funcție de client
+    # JSON pt Postman
     if auth_header:
         return jsonify({
             "status": "success",
@@ -1733,7 +1697,7 @@ def approve_leave(leave_id):
 # HR – Reject concediu
 @app.route("/leave/<int:leave_id>/reject", methods=["POST"])
 def reject_leave(leave_id):
-    # --- LOGICA HIBRIDĂ TOKEN (Postman + Browser) ---
+    # Token hibrid
     auth_header = request.headers.get("Authorization")
     token = auth_header.split(" ")[1] if auth_header and auth_header.startswith("Bearer ") else session.get("access_token")
 
@@ -1745,12 +1709,11 @@ def reject_leave(leave_id):
         userinfo = decode_token(token)
     except Exception:
         return jsonify({"error": "Invalid token"}), 401
-    # -----------------------------------------------
 
     if not can_manage_leaves(userinfo):
         return "Access denied", 403
 
-    # Executăm update-ul doar dacă cererea este încă PENDING
+    # Daca e in pending
     updated = (
         db.session.query(LeaveRequest)
         .filter(LeaveRequest.id == leave_id, LeaveRequest.status == LeaveStatus.PENDING)
@@ -1768,9 +1731,9 @@ def reject_leave(leave_id):
         error_msg = "Cererea a fost deja procesata de alt cineva sau nu exista."
         if auth_header:
             return jsonify({"error": error_msg}), 409
-        return error_msg, 409
+        return error_msg, 409e
 
-    # Preluăm datele pentru notificarea prin email
+    # Date pt email
     leave = LeaveRequest.query.get(leave_id)
     emp_email = email_for_sub(leave.user_id)
     subject, body = build_leave_email(LeaveStatus.REJECTED, leave)
@@ -1786,7 +1749,7 @@ def reject_leave(leave_id):
     except Exception as e:
         logger.error("Email send failed for rejection leave %s: %s", leave_id, e)
 
-    # Răspuns în funcție de client
+    # JSON pt Postman
     if auth_header:
         return jsonify({
             "status": "rejected",

@@ -5,7 +5,7 @@ import smtplib
 import time
 from email.message import EmailMessage
 
-# --- CONFIGURARE SETĂRI ---
+# Setari
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
@@ -13,11 +13,10 @@ SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
 SMTP_USE_TLS = os.environ.get("SMTP_USE_TLS", "1") == "1"
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
 
-# --- LOGICA CITIRE SECRET (PAROLĂ) ---
+# LOgica citire
 SMTP_PASS_FILE = os.environ.get("SMTP_PASS_FILE")
 if SMTP_PASS_FILE and os.path.exists(SMTP_PASS_FILE):
     with open(SMTP_PASS_FILE, "r") as f:
-        # Folosim .strip() pentru a elimina caractere invizibile gen \n
         SMTP_PASS = f.read().strip()
 else:
     SMTP_PASS = os.environ.get("SMTP_PASS", "")
@@ -51,23 +50,21 @@ def callback(ch, method, properties, body):
     print(f" [received] Mesaj primit: {body.decode()}")
     data = json.loads(body)
     
-    # Încercăm trimiterea
+    # Attempt trimitere email
     success = send_email_worker(data.get('to'), data.get('subject'), data.get('body'))
     
     if success:
-        # Confirmăm mesajul către RabbitMQ doar dacă s-a trimis e-mailul
+        # Confirmare mesaj
         ch.basic_ack(delivery_tag=method.delivery_tag)
     else:
-        # Dacă a eșuat, mesajul rămâne în coadă (nack) pentru a fi reîncercat mai târziu
         print(" [!] Trimitere eșuată. Mesajul rămâne în coadă.")
-        # Requeue=True permite reîncercarea automată
+        # Incearca iar
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-        # Punem un mic sleep să nu facă loop infinit instant în caz de eroare critică
+        # Sleep sa nu am loop insane
         time.sleep(5)
 
-# --- SETUP RABBITMQ CONSUMER ---
+# Setup RabbitMQ
 print(' [*] Se conectează la RabbitMQ...')
-# Adăugăm un mic retry pentru pornire, în caz că RabbitMQ nu e gata imediat
 connected = False
 while not connected:
     try:
@@ -83,7 +80,7 @@ ch.exchange_declare(exchange="email_exchange", exchange_type="topic", durable=Tr
 ch.queue_declare(queue="email_queue", durable=True)
 ch.queue_bind(exchange="email_exchange", queue="email_queue", routing_key="email.send")
 
-# Setăm prefetch_count=1 ca să nu ia mai multe mailuri deodată dacă unul dă eroare
+# Sa nu preia mai multe mesaje decat poate procesa
 ch.basic_qos(prefetch_count=1)
 ch.basic_consume(queue="email_queue", on_message_callback=callback)
 

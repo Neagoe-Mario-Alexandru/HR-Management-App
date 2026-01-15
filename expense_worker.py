@@ -27,7 +27,7 @@ NOTIFY_ROUTING_KEY = os.environ.get("NOTIFY_ROUTING_KEY", "notify.expense")
 
 # Stripe
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
-USE_STRIPE_MOCK = not STRIPE_SECRET_KEY  # True daca cheia nu exista sau e goala
+USE_STRIPE_MOCK = not STRIPE_SECRET_KEY
 
 if USE_STRIPE_MOCK:
     logger.warning("⚠️ Stripe mock mode activated")
@@ -54,7 +54,7 @@ RETRY_SLEEP = float(os.environ.get("WORKER_CONNECT_RETRY_SLEEP", "2.0"))
 
 # Behavior
 WORKER_AUTO_PROCESS = os.environ.get("WORKER_AUTO_PROCESS", "0") == "1"
-REQUEUE_IF_NOT_APPROVED = False  # ❗ NU requeue business-state
+REQUEUE_IF_NOT_APPROVED = False
 
 # Conectare la Rabbit
 def _connect_with_retry() -> pika.BlockingConnection:
@@ -166,16 +166,16 @@ def _process_expense(expense_id: int, trace_id: Optional[str], notify_channel) -
             # Stripe real - Plata automata din Worker
             pi = stripe.PaymentIntent.create(
                 amount=int(exp.amount * 100),
-                # Corectie automata pentru moneda: Stripe vrea 'ron', nu 'lei'
+                # Corectie automata pentru moneda: Stripe vrea ron, nu lei
                 currency=exp.currency.lower() if exp.currency.lower() != "lei" else "ron",
                 description=exp.description or f"Expense #{exp.id}",
                 confirm=True,
-                off_session=True, # Ii spunem Stripe ca nu e utilizatorul la tastatura
+                off_session=True,
                 
-                # Folosim un Payment Method de test (simuleaza cardul tau 4242...)
+                # Simulare card
                 payment_method="pm_card_visa", 
                 
-                # Dezactivam redirectionarile (ex. 3D Secure) pentru ca workerul nu poate da click
+                # Fara redirect
                 automatic_payment_methods={
                     "enabled": True,
                     "allow_redirects": "never"
